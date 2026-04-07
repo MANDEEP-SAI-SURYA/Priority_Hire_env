@@ -10,10 +10,22 @@ models:
   observation: priority_hire_env.models.Observation
   action: priority_hire_env.models.ActionModel
   reward: priority_hire_env.models.RewardModel
+# tasks:
+#   - easy_critical_backend
+#   - medium_scarce_ml_specialist
+#   - hard_multi_tradeoff
+
 tasks:
-  - easy_critical_backend
-  - medium_scarce_ml_specialist
-  - hard_multi_tradeoff
+  - name: easy_critical_backend
+    grader: priority_hire_env.env.PriorityHireEnv.compute_score
+  - name: medium_scarce_ml_specialist
+    grader: priority_hire_env.env.PriorityHireEnv.compute_score
+  - name: hard_multi_tradeoff
+    grader: priority_hire_env.env.PriorityHireEnv.compute_score
+  - name: medium_deadline_pressure
+    grader: priority_hire_env.env.PriorityHireEnv.compute_score
+  - name: hard_conflicting_priorities
+    grader: priority_hire_env.env.PriorityHireEnv.compute_score
 baselines:
   - fifo
   - priority_only
