@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .env import PriorityHireEnv
-
 
 MIN_SCORE = 0.1001
 MAX_SCORE = 0.9899
@@ -23,9 +21,6 @@ def _normalize_score(value: Any) -> float:
 
 
 def _extract_task_name(item: Any) -> str | None:
-    if isinstance(item, PriorityHireEnv):
-        return item.task_name
-
     task_name = getattr(item, "task_name", None)
     if isinstance(task_name, str):
         return task_name
@@ -57,8 +52,15 @@ def _extract_task_name(item: Any) -> str | None:
 
 
 def _extract_info(item: Any) -> dict[str, Any] | None:
-    if isinstance(item, PriorityHireEnv):
-        return item.state().info
+    state = getattr(item, "state", None)
+    if callable(state):
+        try:
+            result = state()
+        except TypeError:
+            result = None
+        info = getattr(result, "info", None)
+        if isinstance(info, dict):
+            return info
 
     info = getattr(item, "info", None)
     if isinstance(info, dict):
@@ -78,8 +80,12 @@ def _extract_score(*args: Any, **kwargs: Any) -> float:
     candidates = list(args) + list(kwargs.values())
 
     for item in candidates:
-        if isinstance(item, PriorityHireEnv):
-            return _normalize_score(item.compute_score())
+        compute_score = getattr(item, "compute_score", None)
+        if callable(compute_score):
+            try:
+                return _normalize_score(compute_score())
+            except TypeError:
+                pass
 
     for item in candidates:
         normalized_score = getattr(item, "normalized_score", None)
