@@ -18,8 +18,8 @@ pinned: false
 - Typed Pydantic observation, action, reward, transition, and state models
 - `reset()`, `step()`, and `state()` environment methods
 - FastAPI server exposing `/`, `/health`, `/tasks`, `/reset`, `/step`, and `/state`
-- Three deterministic tasks: easy, medium, and hard
-- Deterministic normalized grading in `[0.0, 1.0]`
+- Five deterministic tasks with task-specific graders
+- Deterministic normalized grading in `(0.1, 0.99)`
 - Four baselines: FIFO, priority-only, fit-only, and priority+fit
 - Root `inference.py` with structured stdout logging
 - Dockerfile for container deployment

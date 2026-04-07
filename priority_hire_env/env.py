@@ -19,6 +19,8 @@ from .tasks import TASKS, TaskDefinition
 
 class PriorityHireEnv:
     benchmark_name = "priority_hire"
+    min_score = 0.1001
+    max_score = 0.9899
 
     def __init__(self, task_name: str = "easy_critical_backend"):
         if task_name not in TASKS:
@@ -174,7 +176,7 @@ class PriorityHireEnv:
             + 0.10 * scarce_slot_preservation
             + 0.08 * efficiency
         )
-        return round(min(max(score, 0.0001), 0.9999), 4)
+        return round(min(max(score, self.min_score), self.max_score), 4)
 
     def _handle_schedule(self, action: ScheduleAction) -> Tuple[float, Dict[str, float]]:
         candidate = self._candidates.get(action.candidate_id)
