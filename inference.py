@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from openai import OpenAI
 
-from client import PriorityHireEnv
+from client import PriorityHireAction, PriorityHireEnv
 from server.environment import priority_fit_policy
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
@@ -98,23 +98,25 @@ def coerce_action(model_action: Optional[dict], fallback_action):
         return fallback_action
     kind = model_action.get("kind")
     if kind == "schedule" and {"candidate_id", "interviewer_id", "slot_id"} <= set(model_action):
-        from priority_hire_env.models import ScheduleAction
-
-        return ScheduleAction(**model_action)
+        return PriorityHireAction(
+            kind="schedule",
+            candidate_id=model_action.get("candidate_id"),
+            interviewer_id=model_action.get("interviewer_id"),
+            slot_id=model_action.get("slot_id"),
+        )
     if kind == "defer" and "candidate_id" in model_action:
-        from priority_hire_env.models import DeferAction
-
-        return DeferAction(**model_action)
+        return PriorityHireAction(kind="defer", candidate_id=model_action.get("candidate_id"))
     if kind == "submit":
-        from priority_hire_env.models import SubmitAction
-
-        return SubmitAction()
+        return PriorityHireAction(kind="submit")
     return fallback_action
 
 
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "missing-token")
-    env = await PriorityHireEnv.from_docker_image(IMAGE_NAME, task_name=TASK_NAME)
+    if not IMAGE_NAME:
+        raise RuntimeError("Missing LOCAL_IMAGE_NAME or IMAGE_NAME for from_docker_image()")
+
+    env = await PriorityHireEnv.from_docker_image(IMAGE_NAME)
 
     rewards: List[float] = []
     steps_taken = 0
@@ -124,7 +126,8 @@ async def main() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        observation = await env.areset(task_name=TASK_NAME)
+        transition = await env.reset(task_name=TASK_NAME)
+        observation = transition.observation
         done = False
 
         for step in range(1, MAX_STEPS + 1):
@@ -135,15 +138,15 @@ async def main() -> None:
             model_action = choose_action_with_model(client, observation.model_dump())
             action = coerce_action(model_action, fallback_action)
 
-            transition = await env.astep(action)
+            transition = await env.step(action)
             observation = transition.observation
-            reward = transition.reward.reward
+            reward = float(transition.reward or 0.0)
             done = transition.done
             error = observation.last_action_error
 
             rewards.append(reward)
             steps_taken = step
-            score = float(transition.info.get("score", 0.0))
+            score = float(getattr(observation, "score", 0.0))
 
             log_step(step=step, action=action_to_log_string(action), reward=reward, done=done, error=error)
 
@@ -152,6 +155,9 @@ async def main() -> None:
 
         success = score >= SUCCESS_SCORE_THRESHOLD
 
+    except Exception as exc:
+        print(f"[ERROR] {type(exc).__name__}: {exc}", flush=True)
+        raise
     finally:
         await env.close()
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
