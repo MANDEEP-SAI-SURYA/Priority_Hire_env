@@ -14,11 +14,6 @@ models:
   observation: priority_hire_env.models.Observation
   action: priority_hire_env.models.ActionModel
   reward: priority_hire_env.models.RewardModel
-# tasks:
-#   - easy_critical_backend
-#   - medium_scarce_ml_specialist
-#   - hard_multi_tradeoff
-
 tasks:
   - name: easy_critical_backend
     grader: priority_hire_env.graders.grade_easy_critical_backend

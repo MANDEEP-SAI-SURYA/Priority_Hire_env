@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "priority-hire-env"
+name = "openenv-priority-hire-env"
 version = "0.1.0"
 description = "OpenEnv dynamic interview scheduling environment."
 readme = "README.md"
@@ -24,3 +24,6 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["priority_hire_env*", "server*"]
+
+[tool.setuptools.package-data]
+priority_hire_env = ["openenv.yaml"]
