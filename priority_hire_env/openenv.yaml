@@ -15,15 +15,20 @@ models:
   action: priority_hire_env.models.ActionModel
   reward: priority_hire_env.models.RewardModel
 tasks:
-  - name: easy_critical_backend
+  - id: easy_critical_backend
+    name: easy_critical_backend
     grader: priority_hire_env.graders.grade_easy_critical_backend
-  - name: medium_scarce_ml_specialist
+  - id: medium_scarce_ml_specialist
+    name: medium_scarce_ml_specialist
     grader: priority_hire_env.graders.grade_medium_scarce_ml_specialist
-  - name: hard_multi_tradeoff
+  - id: hard_multi_tradeoff
+    name: hard_multi_tradeoff
     grader: priority_hire_env.graders.grade_hard_multi_tradeoff
-  - name: medium_deadline_pressure
+  - id: medium_deadline_pressure
+    name: medium_deadline_pressure
     grader: priority_hire_env.graders.grade_medium_deadline_pressure
-  - name: hard_conflicting_priorities
+  - id: hard_conflicting_priorities
+    name: hard_conflicting_priorities
     grader: priority_hire_env.graders.grade_hard_conflicting_priorities
 baselines:
   - fifo
