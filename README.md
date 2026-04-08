@@ -337,11 +337,12 @@ If a plan does not end with `submit`, the grader auto-submits it.
 | `API_KEY` | Required proxy API token injected by the evaluator | unset |
 | `API_BASE_URL` | Required proxy base URL injected by the evaluator | unset |
 | `MODEL_NAME` | Model used by the baseline agent | `Qwen/Qwen2.5-72B-Instruct` |
-| `PRIORITY_HIRE_TASK` | Task to run | `easy_critical_backend` |
+| `PRIORITY_HIRE_TASK` | Preferred task name when single-task mode is enabled | `easy_critical_backend` |
+| `PRIORITY_HIRE_RUN_SINGLE_TASK` | Run only `PRIORITY_HIRE_TASK` instead of the full benchmark | unset |
 | `PRIORITY_HIRE_BENCHMARK` | Benchmark name used in logs | `priority_hire` |
 | `SPACE_URL` | Environment server URL | `https://priorityhire-env.hf.space` |
 
-For submissions, `inference.py` now prioritizes the injected `API_BASE_URL` and `API_KEY` and performs a small warmup LLM request before task execution so the evaluator can observe proxy traffic. For local development, it can still fall back to `HF_TOKEN` plus the Hugging Face router when the submission variables are not present.
+For submissions, `inference.py` now prioritizes the injected `API_BASE_URL` and `API_KEY`, performs a small warmup LLM request before task execution so the evaluator can observe proxy traffic, and runs the full benchmark task list by default. For local development, it can still fall back to `HF_TOKEN` plus the Hugging Face router when the submission variables are not present.
 
 ### Example
 
@@ -387,7 +388,7 @@ This makes it suitable for Hugging Face Docker Spaces.
 - `submit` is required for final grading, but the grader auto-submits if needed
 - the environment may auto-submit when `max_attempts` is reached
 - task scores are intentionally bounded below `1.0`
-- `PRIORITY_HIRE_TASK` currently defaults to a single task in `inference.py`
+- `inference.py` now runs the full task list by default; set `PRIORITY_HIRE_RUN_SINGLE_TASK=true` to force single-task mode
 
 ## Summary
 
