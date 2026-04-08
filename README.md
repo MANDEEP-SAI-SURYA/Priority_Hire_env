@@ -39,5 +39,5 @@ python -m venv .venv
 pip install -r requirements.txt
 python run_baselines.py
 python inference.py
-uvicorn priority_hire_env.server:app --host 0.0.0.0 --port 7860
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
