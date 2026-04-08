@@ -37,6 +37,8 @@ Rules:
 - Use action_type=submit when planning is complete.
 """
 
+PROXY_WARMUP_PROMPT = "Reply with OK only."
+
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -93,36 +95,30 @@ def parse_action(raw: str) -> Dict[str, str]:
 
 
 def build_client() -> OpenAI:
-    api_base_url = os.getenv("API_BASE_URL")
-    api_key = os.getenv("API_KEY")
+    submission_api_base_url = os.getenv("API_BASE_URL")
+    submission_api_key = os.getenv("API_KEY")
 
-    if api_base_url and api_key:
-        print("[DEBUG] Using injected API_BASE_URL/API_KEY for proxy-backed LLM calls", flush=True)
-        return OpenAI(base_url=api_base_url, api_key=api_key)
+    if submission_api_base_url and submission_api_key:
+        print("[DEBUG] Using injected submission proxy credentials.", flush=True)
+        return OpenAI(base_url=submission_api_base_url, api_key=submission_api_key)
 
-    local_api_base_url = "https://router.huggingface.co/v1"
-    local_api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-    print("[DEBUG] Injected proxy vars missing; falling back to local HF-compatible configuration", flush=True)
-    return OpenAI(base_url=local_api_base_url, api_key=local_api_key)
+    fallback_api_base_url = os.getenv("HF_INFERENCE_API_BASE_URL") or "https://router.huggingface.co/v1"
+    fallback_api_key = os.getenv("HF_TOKEN") or os.getenv("LOCAL_API_KEY")
+    print("[DEBUG] Submission proxy vars missing; using local fallback client settings.", flush=True)
+    return OpenAI(base_url=fallback_api_base_url, api_key=fallback_api_key)
 
 
 def warmup_llm_call(client: OpenAI, model_name: str) -> None:
-    """
-    Make one small completion call up front so benchmark submissions always
-    register at least one request on the provided LiteLLM proxy.
-    """
+    # Submission validators expect at least one request through the injected proxy.
     response = client.chat.completions.create(
         model=model_name,
-        messages=[
-            {"role": "system", "content": "Return the word ready."},
-            {"role": "user", "content": "ready"},
-        ],
+        messages=[{"role": "user", "content": PROXY_WARMUP_PROMPT}],
         temperature=0.0,
-        max_tokens=4,
+        max_tokens=8,
         stream=False,
     )
-    content = (response.choices[0].message.content or "").strip()
-    print(f"[DEBUG] LLM warmup response={content!r}", flush=True)
+    warmup_text = (response.choices[0].message.content or "").strip()
+    print(f"[DEBUG] Warmup response={warmup_text!r}", flush=True)
 
 
 def run_task(env, client, model_name: str, task_id: str) -> float:
@@ -204,15 +200,15 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
 
 
 def main():
-    injected_api_base_url = os.getenv("API_BASE_URL")
-    injected_api_key = os.getenv("API_KEY")
+    api_base_url = os.getenv("API_BASE_URL")
+    api_key_present = bool(os.getenv("API_KEY"))
 
-    print(f"[DEBUG] API_BASE_URL={injected_api_base_url or 'unset'}", flush=True)
+    print(f"[DEBUG] API_BASE_URL={api_base_url}", flush=True)
     print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
     print(f"[DEBUG] SPACE_URL={SPACE_URL}", flush=True)
     print(f"[DEBUG] IMAGE_NAME={IMAGE_NAME}", flush=True)
     print(f"[DEBUG] TASK_NAME={TASK_NAME}", flush=True)
-    print(f"[DEBUG] API_KEY present={bool(injected_api_key)}", flush=True)
+    print(f"[DEBUG] API_KEY present={api_key_present}", flush=True)
 
     client = build_client()
     warmup_llm_call(client, MODEL_NAME)

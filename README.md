@@ -341,6 +341,8 @@ If a plan does not end with `submit`, the grader auto-submits it.
 | `PRIORITY_HIRE_BENCHMARK` | Benchmark name used in logs | `priority_hire` |
 | `SPACE_URL` | Environment server URL | `https://priorityhire-env.hf.space` |
 
+For submissions, `inference.py` now prioritizes the injected `API_BASE_URL` and `API_KEY` and performs a small warmup LLM request before task execution so the evaluator can observe proxy traffic. For local development, it can still fall back to `HF_TOKEN` plus the Hugging Face router when the submission variables are not present.
+
 ### Example
 
 ```powershell
