@@ -14,11 +14,14 @@ from openai import OpenAI
 from client import PriorityHireEnv
 from models import PriorityHireAction
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+TASK_NAME = os.getenv("PRIORITY_HIRE_TASK", "easy_critical_backend")
+BENCHMARK = os.getenv("PRIORITY_HIRE_BENCHMARK", "priority_hire")
 SPACE_URL = os.getenv("SPACE_URL", "https://priorityhire-env.hf.space")
-BENCHMARK = "priorityhire-env"
 TASK_IDS = [
     "easy_critical_backend",
     "medium_scarce_ml_specialist",
@@ -171,37 +174,36 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
 
 
 def main():
-    api_base_url = os.environ["API_BASE_URL"]
-    api_key = os.environ["API_KEY"]
-    model_name = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-
-    print(f"[DEBUG] API_BASE_URL={api_base_url}", flush=True)
-    print(f"[DEBUG] MODEL_NAME={model_name}", flush=True)
+    print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
+    print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
     print(f"[DEBUG] SPACE_URL={SPACE_URL}", flush=True)
-    print(f"[DEBUG] API_KEY present={bool(api_key)}", flush=True)
+    print(f"[DEBUG] IMAGE_NAME={IMAGE_NAME}", flush=True)
+    print(f"[DEBUG] TASK_NAME={TASK_NAME}", flush=True)
+    print(f"[DEBUG] API_KEY present={bool(API_KEY)}", flush=True)
 
-    client = OpenAI(base_url=api_base_url, api_key=api_key)
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     all_scores = {}
+    task_ids = [TASK_NAME] if TASK_NAME else TASK_IDS
 
     try:
         env_client = PriorityHireEnv(base_url=SPACE_URL)
         with env_client.sync() as env:
-            for task_id in TASK_IDS:
+            for task_id in task_ids:
                 try:
-                    score = run_task(env, client, model_name, task_id)
+                    score = run_task(env, client, MODEL_NAME, task_id)
                 except Exception as e:
                     print(f"[DEBUG] Task {task_id} error: {e}", flush=True)
-                    log_start(task=task_id, env=BENCHMARK, model=model_name)
+                    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
                     log_end(success=False, steps=0, score=0.0, rewards=[0.0])
                     score = 0.0
                 all_scores[task_id] = score
 
     except Exception as e:
         print(f"[DEBUG] Connection error: {e}", flush=True)
-        for task_id in TASK_IDS:
+        for task_id in task_ids:
             if task_id not in all_scores:
-                log_start(task=task_id, env=BENCHMARK, model=model_name)
+                log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
                 log_end(success=False, steps=0, score=0.0, rewards=[0.0])
                 all_scores[task_id] = 0.0
 
