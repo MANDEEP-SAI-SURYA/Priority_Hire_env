@@ -334,9 +334,8 @@ If a plan does not end with `submit`, the grader auto-submits it.
 | --- | --- | --- |
 | `LOCAL_IMAGE_NAME` | Local image label for logging | unset |
 | `IMAGE_NAME` | Fallback image label if `LOCAL_IMAGE_NAME` is unset | unset |
-| `HF_TOKEN` | Primary API token | unset |
-| `API_KEY` | Fallback API token | unset |
-| `API_BASE_URL` | OpenAI-compatible base URL | `https://router.huggingface.co/v1` |
+| `API_KEY` | Required proxy API token injected by the evaluator | unset |
+| `API_BASE_URL` | Required proxy base URL injected by the evaluator | unset |
 | `MODEL_NAME` | Model used by the baseline agent | `Qwen/Qwen2.5-72B-Instruct` |
 | `PRIORITY_HIRE_TASK` | Task to run | `easy_critical_backend` |
 | `PRIORITY_HIRE_BENCHMARK` | Benchmark name used in logs | `priority_hire` |
@@ -345,7 +344,8 @@ If a plan does not end with `submit`, the grader auto-submits it.
 ### Example
 
 ```powershell
-$env:HF_TOKEN="your_token"
+$env:API_BASE_URL="https://your-proxy.example/v1"
+$env:API_KEY="your_proxy_key"
 $env:MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
 $env:PRIORITY_HIRE_TASK="medium_scarce_ml_specialist"
 python inference.py
@@ -381,6 +381,7 @@ This makes it suitable for Hugging Face Docker Spaces.
 ## Notes and Gotchas
 
 - Use `pip install -r requirements.txt`, not `pip install requirements.txt`
+- for benchmark submissions, use the injected `API_BASE_URL` and `API_KEY` exactly as provided
 - `submit` is required for final grading, but the grader auto-submits if needed
 - the environment may auto-submit when `max_attempts` is reached
 - task scores are intentionally bounded below `1.0`
