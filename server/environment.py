@@ -1,599 +1,836 @@
-from __future__ import annotations
 
+"""
+server/environment.py - Core PriorityHire interview scheduling environment logic.
+"""
+
+import copy
+import json
+import os
+import random
+import sys
 import uuid
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Tuple
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from openenv.core.env_server import Environment
-from openenv.core.env_server.types import EnvironmentMetadata
-
 from models import PriorityHireAction, PriorityHireObservation, PriorityHireState
 
-
-MIN_SCORE = 0.1001
-MAX_SCORE = 0.9899
-
-
-class CandidateSeed(TypedDict):
-    candidate_id: str
-    role: str
-    priority: int
-    urgency: int
-    fit_score: float
-    deadline: int
-    available_slots: List[str]
-    required_specialization: str
+CLAMP_LOW = 0.1001
+CLAMP_HIGH = 0.9899
+EPSILON = 0.0001
 
 
-class InterviewerSeed(TypedDict):
-    interviewer_id: str
-    specialization: str
-    available_slots: List[str]
-    max_capacity: int
+def _clamp_open_interval(value: float) -> float:
+    low_open = CLAMP_LOW + EPSILON
+    high_open = CLAMP_HIGH - EPSILON
+    if value <= CLAMP_LOW:
+        return round(low_open, 4)
+    if value >= CLAMP_HIGH:
+        return round(high_open, 4)
+    return round(value, 4)
 
 
-class TaskDefinition(TypedDict):
-    name: str
-    difficulty: str
-    description: str
-    max_steps: int
-    candidates: List[CandidateSeed]
-    interviewers: List[InterviewerSeed]
-
-
-TASKS: Dict[str, TaskDefinition] = {
+TASKS: Dict[str, Dict[str, Any]] = {
     "easy_critical_backend": {
-        "name": "easy_critical_backend",
+        "id": "easy_critical_backend",
         "difficulty": "easy",
-        "description": "Enough capacity exists, but a single backend candidate is clearly the most urgent.",
-        "max_steps": 8,
-        "candidates": [
-            {"candidate_id": "cand_backend_1", "role": "Senior Backend Engineer", "priority": 5, "urgency": 5, "fit_score": 0.93, "deadline": 2, "available_slots": ["s1", "s2"], "required_specialization": "backend"},
-            {"candidate_id": "cand_frontend_1", "role": "Frontend Engineer", "priority": 2, "urgency": 2, "fit_score": 0.74, "deadline": 4, "available_slots": ["s2", "s3"], "required_specialization": "frontend"},
-            {"candidate_id": "cand_data_1", "role": "Data Analyst", "priority": 3, "urgency": 2, "fit_score": 0.81, "deadline": 3, "available_slots": ["s1", "s3"], "required_specialization": "data"},
-        ],
+        "description": "Prioritize urgent backend candidates while keeping interviewer fit high.",
+        "max_attempts": 10,
+        "global_context": {
+            "company": "PriorityHire",
+            "role": "Backend Engineer",
+            "hiring_window_days": 5,
+            "objective": "Schedule strongest and most urgent backend candidates first.",
+        },
         "interviewers": [
-            {"interviewer_id": "int_backend_a", "specialization": "backend", "available_slots": ["s1", "s2"], "max_capacity": 2},
-            {"interviewer_id": "int_frontend_a", "specialization": "frontend", "available_slots": ["s2", "s3"], "max_capacity": 1},
-            {"interviewer_id": "int_data_a", "specialization": "data", "available_slots": ["s1", "s3"], "max_capacity": 1},
+            {
+                "id": "i_backend_1",
+                "name": "Asha",
+                "specializations": ["backend", "distributed_systems"],
+                "slots": [
+                    {"id": "b1_morning", "label": "Tue 10:00", "deadline_pressure": 8},
+                    {"id": "b1_evening", "label": "Tue 16:00", "deadline_pressure": 6},
+                ],
+            },
+            {
+                "id": "i_general_1",
+                "name": "Ravi",
+                "specializations": ["generalist", "api_design"],
+                "slots": [{"id": "g1_midday", "label": "Wed 12:00", "deadline_pressure": 5}],
+            },
+        ],
+        "candidates": [
+            {
+                "id": "c_backend_hotfix",
+                "name": "Maya",
+                "priority": 10,
+                "urgency": 9,
+                "deadline_pressure": 9,
+                "required_specialization": "backend",
+                "fit_scores": {"i_backend_1": 0.93, "i_general_1": 0.72},
+            },
+            {
+                "id": "c_backend_mid",
+                "name": "Neil",
+                "priority": 8,
+                "urgency": 7,
+                "deadline_pressure": 7,
+                "required_specialization": "backend",
+                "fit_scores": {"i_backend_1": 0.86, "i_general_1": 0.74},
+            },
+            {
+                "id": "c_platform",
+                "name": "Ira",
+                "priority": 6,
+                "urgency": 5,
+                "deadline_pressure": 6,
+                "required_specialization": "distributed_systems",
+                "fit_scores": {"i_backend_1": 0.81, "i_general_1": 0.78},
+            },
+        ],
+        "oracle_plan": [
+            {"action_type": "schedule", "candidate_id": "c_backend_hotfix", "interviewer_id": "i_backend_1", "slot_id": "b1_morning"},
+            {"action_type": "schedule", "candidate_id": "c_backend_mid", "interviewer_id": "i_backend_1", "slot_id": "b1_evening"},
+            {"action_type": "schedule", "candidate_id": "c_platform", "interviewer_id": "i_general_1", "slot_id": "g1_midday"},
+            {"action_type": "submit"},
         ],
     },
     "medium_scarce_ml_specialist": {
-        "name": "medium_scarce_ml_specialist",
+        "id": "medium_scarce_ml_specialist",
         "difficulty": "medium",
-        "description": "A scarce ML specialist must be preserved for the urgent candidate rather than a lower-priority high-fit profile.",
-        "max_steps": 9,
-        "candidates": [
-            {"candidate_id": "cand_ml_urgent", "role": "ML Platform Engineer", "priority": 5, "urgency": 4, "fit_score": 0.82, "deadline": 1, "available_slots": ["s1"], "required_specialization": "ml"},
-            {"candidate_id": "cand_ml_nice", "role": "ML Research Engineer", "priority": 2, "urgency": 2, "fit_score": 0.94, "deadline": 3, "available_slots": ["s1", "s2"], "required_specialization": "ml"},
-            {"candidate_id": "cand_general_backend", "role": "Backend Engineer", "priority": 4, "urgency": 3, "fit_score": 0.86, "deadline": 2, "available_slots": ["s2", "s3"], "required_specialization": "backend"},
-        ],
+        "description": "Allocate scarce ML specialist slots to maximize match quality under pressure.",
+        "max_attempts": 12,
+        "global_context": {
+            "company": "PriorityHire",
+            "role": "ML Engineer",
+            "hiring_window_days": 4,
+            "objective": "Use specialist capacity wisely; avoid wasting ML-only slots.",
+        },
         "interviewers": [
-            {"interviewer_id": "int_ml_only", "specialization": "ml", "available_slots": ["s1"], "max_capacity": 1},
-            {"interviewer_id": "int_backend_b", "specialization": "backend", "available_slots": ["s2", "s3"], "max_capacity": 2},
+            {
+                "id": "i_ml_1",
+                "name": "Sara",
+                "specializations": ["ml", "nlp"],
+                "slots": [
+                    {"id": "ml1_prime", "label": "Mon 09:00", "deadline_pressure": 10},
+                    {"id": "ml1_backup", "label": "Mon 14:00", "deadline_pressure": 8},
+                ],
+            },
+            {
+                "id": "i_data_1",
+                "name": "Om",
+                "specializations": ["data", "analytics"],
+                "slots": [
+                    {"id": "d1_morning", "label": "Tue 11:00", "deadline_pressure": 6},
+                    {"id": "d1_evening", "label": "Tue 17:00", "deadline_pressure": 5},
+                ],
+            },
+        ],
+        "candidates": [
+            {
+                "id": "c_ml_research",
+                "name": "Kiara",
+                "priority": 9,
+                "urgency": 8,
+                "deadline_pressure": 9,
+                "required_specialization": "ml",
+                "fit_scores": {"i_ml_1": 0.95, "i_data_1": 0.62},
+            },
+            {
+                "id": "c_mle_prod",
+                "name": "Dev",
+                "priority": 8,
+                "urgency": 8,
+                "deadline_pressure": 8,
+                "required_specialization": "ml",
+                "fit_scores": {"i_ml_1": 0.91, "i_data_1": 0.68},
+            },
+            {
+                "id": "c_data_eng",
+                "name": "Arun",
+                "priority": 6,
+                "urgency": 6,
+                "deadline_pressure": 6,
+                "required_specialization": "data",
+                "fit_scores": {"i_ml_1": 0.64, "i_data_1": 0.87},
+            },
+            {
+                "id": "c_analytics",
+                "name": "Rhea",
+                "priority": 5,
+                "urgency": 4,
+                "deadline_pressure": 5,
+                "required_specialization": "analytics",
+                "fit_scores": {"i_ml_1": 0.58, "i_data_1": 0.83},
+            },
+        ],
+        "oracle_plan": [
+            {"action_type": "schedule", "candidate_id": "c_ml_research", "interviewer_id": "i_ml_1", "slot_id": "ml1_prime"},
+            {"action_type": "schedule", "candidate_id": "c_mle_prod", "interviewer_id": "i_ml_1", "slot_id": "ml1_backup"},
+            {"action_type": "schedule", "candidate_id": "c_data_eng", "interviewer_id": "i_data_1", "slot_id": "d1_morning"},
+            {"action_type": "defer", "candidate_id": "c_analytics"},
+            {"action_type": "submit"},
         ],
     },
     "hard_multi_tradeoff": {
-        "name": "hard_multi_tradeoff",
+        "id": "hard_multi_tradeoff",
         "difficulty": "hard",
-        "description": "Competing deadlines, scarce security slots, and conflicting fit-vs-urgency decisions require careful scheduling.",
-        "max_steps": 12,
-        "candidates": [
-            {"candidate_id": "cand_sec_critical", "role": "Security Architect", "priority": 5, "urgency": 5, "fit_score": 0.79, "deadline": 1, "available_slots": ["s1", "s2"], "required_specialization": "security"},
-            {"candidate_id": "cand_sec_fit", "role": "Security Engineer", "priority": 3, "urgency": 2, "fit_score": 0.97, "deadline": 3, "available_slots": ["s2"], "required_specialization": "security"},
-            {"candidate_id": "cand_backend_urgent", "role": "Staff Backend Engineer", "priority": 4, "urgency": 5, "fit_score": 0.88, "deadline": 1, "available_slots": ["s1", "s3"], "required_specialization": "backend"},
-            {"candidate_id": "cand_frontend_fit", "role": "Senior Frontend Engineer", "priority": 2, "urgency": 2, "fit_score": 0.95, "deadline": 4, "available_slots": ["s3", "s4"], "required_specialization": "frontend"},
-            {"candidate_id": "cand_data_urgent", "role": "Analytics Engineer", "priority": 4, "urgency": 4, "fit_score": 0.84, "deadline": 2, "available_slots": ["s2", "s4"], "required_specialization": "data"},
-            {"candidate_id": "cand_backend_low", "role": "Backend Engineer", "priority": 1, "urgency": 1, "fit_score": 0.77, "deadline": 4, "available_slots": ["s1", "s4"], "required_specialization": "backend"},
-        ],
+        "description": "Balance competing constraints across leadership, platform, and product priorities.",
+        "max_attempts": 12,
+        "global_context": {
+            "company": "PriorityHire",
+            "role": "Senior IC + Staff mix",
+            "hiring_window_days": 3,
+            "objective": "Optimize priority and fit while preserving specialist bandwidth.",
+        },
         "interviewers": [
-            {"interviewer_id": "int_security_only", "specialization": "security", "available_slots": ["s1", "s2"], "max_capacity": 1},
-            {"interviewer_id": "int_backend_c", "specialization": "backend", "available_slots": ["s1", "s3", "s4"], "max_capacity": 2},
-            {"interviewer_id": "int_frontend_b", "specialization": "frontend", "available_slots": ["s3", "s4"], "max_capacity": 1},
-            {"interviewer_id": "int_data_b", "specialization": "data", "available_slots": ["s2", "s4"], "max_capacity": 1},
+            {
+                "id": "i_arch_1",
+                "name": "Tara",
+                "specializations": ["architecture", "backend"],
+                "slots": [
+                    {"id": "a1_early", "label": "Wed 09:30", "deadline_pressure": 9},
+                    {"id": "a1_late", "label": "Wed 15:30", "deadline_pressure": 6},
+                ],
+            },
+            {
+                "id": "i_ml_2",
+                "name": "Nikhil",
+                "specializations": ["ml", "systems"],
+                "slots": [{"id": "ml2_prime", "label": "Thu 10:00", "deadline_pressure": 9}],
+            },
+            {
+                "id": "i_pm_1",
+                "name": "Leena",
+                "specializations": ["product", "execution"],
+                "slots": [{"id": "pm1_mid", "label": "Thu 13:00", "deadline_pressure": 7}],
+            },
+        ],
+        "candidates": [
+            {
+                "id": "c_staff_backend",
+                "name": "Jon",
+                "priority": 10,
+                "urgency": 8,
+                "deadline_pressure": 9,
+                "required_specialization": "architecture",
+                "fit_scores": {"i_arch_1": 0.94, "i_ml_2": 0.72, "i_pm_1": 0.66},
+            },
+            {
+                "id": "c_mlsys",
+                "name": "Zara",
+                "priority": 9,
+                "urgency": 9,
+                "deadline_pressure": 10,
+                "required_specialization": "ml",
+                "fit_scores": {"i_arch_1": 0.69, "i_ml_2": 0.96, "i_pm_1": 0.64},
+            },
+            {
+                "id": "c_prod_lead",
+                "name": "Rohan",
+                "priority": 8,
+                "urgency": 7,
+                "deadline_pressure": 8,
+                "required_specialization": "product",
+                "fit_scores": {"i_arch_1": 0.63, "i_ml_2": 0.61, "i_pm_1": 0.91},
+            },
+            {
+                "id": "c_generalist",
+                "name": "Nora",
+                "priority": 6,
+                "urgency": 6,
+                "deadline_pressure": 7,
+                "required_specialization": "systems",
+                "fit_scores": {"i_arch_1": 0.78, "i_ml_2": 0.84, "i_pm_1": 0.72},
+            },
+        ],
+        "oracle_plan": [
+            {"action_type": "schedule", "candidate_id": "c_mlsys", "interviewer_id": "i_ml_2", "slot_id": "ml2_prime"},
+            {"action_type": "schedule", "candidate_id": "c_staff_backend", "interviewer_id": "i_arch_1", "slot_id": "a1_early"},
+            {"action_type": "schedule", "candidate_id": "c_prod_lead", "interviewer_id": "i_pm_1", "slot_id": "pm1_mid"},
+            {"action_type": "schedule", "candidate_id": "c_generalist", "interviewer_id": "i_arch_1", "slot_id": "a1_late"},
+            {"action_type": "submit"},
         ],
     },
     "medium_deadline_pressure": {
-        "name": "medium_deadline_pressure",
+        "id": "medium_deadline_pressure",
         "difficulty": "medium",
-        "description": "All candidates have tight deadlines; urgency must drive scheduling order.",
-        "max_steps": 10,
-        "candidates": [
-            {"candidate_id": "cand_be_urgent1", "role": "Backend Engineer", "priority": 5, "urgency": 5, "fit_score": 0.88, "deadline": 1, "available_slots": ["s1", "s2"], "required_specialization": "backend"},
-            {"candidate_id": "cand_fe_urgent1", "role": "Frontend Engineer", "priority": 4, "urgency": 4, "fit_score": 0.82, "deadline": 1, "available_slots": ["s1", "s3"], "required_specialization": "frontend"},
-            {"candidate_id": "cand_ml_urgent1", "role": "ML Engineer", "priority": 3, "urgency": 4, "fit_score": 0.79, "deadline": 2, "available_slots": ["s2", "s3"], "required_specialization": "ml"},
-            {"candidate_id": "cand_data_urgent1", "role": "Data Engineer", "priority": 3, "urgency": 3, "fit_score": 0.75, "deadline": 2, "available_slots": ["s1", "s2"], "required_specialization": "data"},
-        ],
+        "description": "Handle near-term deadlines; late scheduling heavily impacts score.",
+        "max_attempts": 10,
+        "global_context": {
+            "company": "PriorityHire",
+            "role": "Frontend + UX",
+            "hiring_window_days": 2,
+            "objective": "Place highest urgency candidates into earliest viable slots.",
+        },
         "interviewers": [
-            {"interviewer_id": "int_backend_d", "specialization": "backend", "available_slots": ["s1", "s2"], "max_capacity": 1},
-            {"interviewer_id": "int_frontend_c", "specialization": "frontend", "available_slots": ["s1", "s3"], "max_capacity": 1},
-            {"interviewer_id": "int_ml_b", "specialization": "ml", "available_slots": ["s2", "s3"], "max_capacity": 1},
-            {"interviewer_id": "int_data_c", "specialization": "data", "available_slots": ["s1", "s2"], "max_capacity": 1},
+            {
+                "id": "i_frontend_1",
+                "name": "Pooja",
+                "specializations": ["frontend", "ui"],
+                "slots": [
+                    {"id": "f1_soon", "label": "Today 16:00", "deadline_pressure": 10},
+                    {"id": "f1_tomorrow", "label": "Tomorrow 11:00", "deadline_pressure": 7},
+                ],
+            },
+            {
+                "id": "i_design_1",
+                "name": "Kabir",
+                "specializations": ["ux", "ui"],
+                "slots": [{"id": "dsg1_today", "label": "Today 18:00", "deadline_pressure": 9}],
+            },
+        ],
+        "candidates": [
+            {
+                "id": "c_ui_hot",
+                "name": "Aditi",
+                "priority": 9,
+                "urgency": 10,
+                "deadline_pressure": 10,
+                "required_specialization": "ui",
+                "fit_scores": {"i_frontend_1": 0.92, "i_design_1": 0.90},
+            },
+            {
+                "id": "c_frontend_sr",
+                "name": "Vik",
+                "priority": 8,
+                "urgency": 8,
+                "deadline_pressure": 9,
+                "required_specialization": "frontend",
+                "fit_scores": {"i_frontend_1": 0.90, "i_design_1": 0.70},
+            },
+            {
+                "id": "c_ux_mid",
+                "name": "Mithra",
+                "priority": 6,
+                "urgency": 6,
+                "deadline_pressure": 7,
+                "required_specialization": "ux",
+                "fit_scores": {"i_frontend_1": 0.71, "i_design_1": 0.88},
+            },
+        ],
+        "oracle_plan": [
+            {"action_type": "schedule", "candidate_id": "c_ui_hot", "interviewer_id": "i_design_1", "slot_id": "dsg1_today"},
+            {"action_type": "schedule", "candidate_id": "c_frontend_sr", "interviewer_id": "i_frontend_1", "slot_id": "f1_soon"},
+            {"action_type": "schedule", "candidate_id": "c_ux_mid", "interviewer_id": "i_frontend_1", "slot_id": "f1_tomorrow"},
+            {"action_type": "submit"},
         ],
     },
     "hard_conflicting_priorities": {
-        "name": "hard_conflicting_priorities",
+        "id": "hard_conflicting_priorities",
         "difficulty": "hard",
-        "description": "Multiple high-priority candidates compete for a single scarce interviewer; trade-offs are unavoidable.",
-        "max_steps": 14,
-        "candidates": [
-            {"candidate_id": "cand_sec_high1", "role": "Security Engineer", "priority": 5, "urgency": 5, "fit_score": 0.91, "deadline": 1, "available_slots": ["s1"], "required_specialization": "security"},
-            {"candidate_id": "cand_sec_high2", "role": "Security Architect", "priority": 5, "urgency": 4, "fit_score": 0.87, "deadline": 2, "available_slots": ["s1", "s2"], "required_specialization": "security"},
-            {"candidate_id": "cand_sec_mid1", "role": "Security Analyst", "priority": 3, "urgency": 3, "fit_score": 0.95, "deadline": 3, "available_slots": ["s1", "s2"], "required_specialization": "security"},
-            {"candidate_id": "cand_be_conf1", "role": "Staff Backend Engineer", "priority": 4, "urgency": 4, "fit_score": 0.84, "deadline": 2, "available_slots": ["s2", "s3"], "required_specialization": "backend"},
-            {"candidate_id": "cand_fe_conf1", "role": "Senior Frontend Engineer", "priority": 3, "urgency": 3, "fit_score": 0.78, "deadline": 3, "available_slots": ["s3", "s4"], "required_specialization": "frontend"},
-        ],
+        "description": "Resolve conflicts where top-priority candidates compete for overlapping specialist slots.",
+        "max_attempts": 14,
+        "global_context": {
+            "company": "PriorityHire",
+            "role": "Cross-functional founding team",
+            "hiring_window_days": 3,
+            "objective": "Trade off priority, urgency, fit, specialization, and deadline pressure.",
+        },
         "interviewers": [
-            {"interviewer_id": "int_security_scarce", "specialization": "security", "available_slots": ["s1", "s2"], "max_capacity": 1},
-            {"interviewer_id": "int_backend_e", "specialization": "backend", "available_slots": ["s2", "s3"], "max_capacity": 2},
-            {"interviewer_id": "int_frontend_d", "specialization": "frontend", "available_slots": ["s3", "s4"], "max_capacity": 1},
+            {
+                "id": "i_founder_backend",
+                "name": "Meera",
+                "specializations": ["backend", "architecture"],
+                "slots": [{"id": "fb_critical", "label": "Fri 09:00", "deadline_pressure": 10}],
+            },
+            {
+                "id": "i_founder_ml",
+                "name": "Ishan",
+                "specializations": ["ml", "systems"],
+                "slots": [
+                    {"id": "fm_critical", "label": "Fri 10:00", "deadline_pressure": 10},
+                    {"id": "fm_late", "label": "Fri 17:00", "deadline_pressure": 5},
+                ],
+            },
+            {
+                "id": "i_founder_product",
+                "name": "Sonal",
+                "specializations": ["product", "go_to_market"],
+                "slots": [{"id": "fp_critical", "label": "Fri 11:00", "deadline_pressure": 9}],
+            },
+        ],
+        "candidates": [
+            {
+                "id": "c_backend_star",
+                "name": "Ritvik",
+                "priority": 10,
+                "urgency": 9,
+                "deadline_pressure": 9,
+                "required_specialization": "backend",
+                "fit_scores": {"i_founder_backend": 0.97, "i_founder_ml": 0.74, "i_founder_product": 0.61},
+            },
+            {
+                "id": "c_ml_star",
+                "name": "Sia",
+                "priority": 10,
+                "urgency": 10,
+                "deadline_pressure": 10,
+                "required_specialization": "ml",
+                "fit_scores": {"i_founder_backend": 0.66, "i_founder_ml": 0.98, "i_founder_product": 0.59},
+            },
+            {
+                "id": "c_product_star",
+                "name": "Arya",
+                "priority": 9,
+                "urgency": 8,
+                "deadline_pressure": 9,
+                "required_specialization": "product",
+                "fit_scores": {"i_founder_backend": 0.60, "i_founder_ml": 0.63, "i_founder_product": 0.95},
+            },
+            {
+                "id": "c_systems_high",
+                "name": "Neer",
+                "priority": 8,
+                "urgency": 8,
+                "deadline_pressure": 8,
+                "required_specialization": "systems",
+                "fit_scores": {"i_founder_backend": 0.75, "i_founder_ml": 0.90, "i_founder_product": 0.64},
+            },
+            {
+                "id": "c_gtm_mid",
+                "name": "Diya",
+                "priority": 6,
+                "urgency": 5,
+                "deadline_pressure": 6,
+                "required_specialization": "go_to_market",
+                "fit_scores": {"i_founder_backend": 0.58, "i_founder_ml": 0.60, "i_founder_product": 0.88},
+            },
+        ],
+        "oracle_plan": [
+            {"action_type": "schedule", "candidate_id": "c_ml_star", "interviewer_id": "i_founder_ml", "slot_id": "fm_critical"},
+            {"action_type": "schedule", "candidate_id": "c_backend_star", "interviewer_id": "i_founder_backend", "slot_id": "fb_critical"},
+            {"action_type": "schedule", "candidate_id": "c_product_star", "interviewer_id": "i_founder_product", "slot_id": "fp_critical"},
+            {"action_type": "schedule", "candidate_id": "c_systems_high", "interviewer_id": "i_founder_ml", "slot_id": "fm_late"},
+            {"action_type": "defer", "candidate_id": "c_gtm_mid"},
+            {"action_type": "submit"},
         ],
     },
 }
 
 
-def list_task_names() -> List[str]:
-    return list(TASKS.keys())
+def _find_interviewer(task: Dict[str, Any], interviewer_id: str) -> Optional[Dict[str, Any]]:
+    for interviewer in task["interviewers"]:
+        if interviewer["id"] == interviewer_id:
+            return interviewer
+    return None
 
 
-@dataclass
-class GradeContext:
-    task_name: str | None
-    score: float
-    schedule_log: list[dict[str, Any]]
+def _find_slot(interviewer: Dict[str, Any], slot_id: str) -> Optional[Dict[str, Any]]:
+    for slot in interviewer["slots"]:
+        if slot["id"] == slot_id:
+            return slot
+    return None
 
 
-def _normalize_score(value: Any) -> float:
-    return round(min(max(float(value), MIN_SCORE), MAX_SCORE), 4)
+def _find_candidate(candidates: List[Dict[str, Any]], candidate_id: str) -> Optional[Dict[str, Any]]:
+    for candidate in candidates:
+        if candidate["id"] == candidate_id:
+            return candidate
+    return None
 
 
-def _scheduled_ids(context: GradeContext) -> set[str]:
-    return {str(item["candidate_id"]) for item in context.schedule_log if item.get("valid") and "candidate_id" in item}
+def _specialization_match(candidate: Dict[str, Any], interviewer: Dict[str, Any]) -> float:
+    return 1.0 if candidate["required_specialization"] in interviewer["specializations"] else 0.35
 
 
-def _valid_ratio(context: GradeContext) -> float:
-    if not context.schedule_log:
-        return 1.0
-    return sum(1 for item in context.schedule_log if item.get("valid")) / len(context.schedule_log)
+def _score_assignment(candidate: Dict[str, Any], interviewer: Dict[str, Any], slot: Dict[str, Any]) -> float:
+    priority = candidate["priority"] / 10.0
+    urgency = candidate["urgency"] / 10.0
+    deadline = candidate["deadline_pressure"] / 10.0
+    fit = float(candidate["fit_scores"].get(interviewer["id"], 0.2))
+    specialization = _specialization_match(candidate, interviewer)
+    slot_weight = max(0.6, min(1.0, slot["deadline_pressure"] / 10.0))
 
-
-def _ctx(info: dict[str, Any]) -> GradeContext:
-    return GradeContext(
-        task_name=str(info.get("task_name")) if info.get("task_name") is not None else None,
-        score=_normalize_score(info.get("score", MIN_SCORE)),
-        schedule_log=[entry for entry in info.get("schedule_log", []) if isinstance(entry, dict)],
+    composite = (
+        (0.30 * priority)
+        + (0.23 * urgency)
+        + (0.20 * fit)
+        + (0.15 * specialization)
+        + (0.12 * deadline)
     )
+    return composite * (0.85 + (0.15 * slot_weight))
+
+def compute_score(
+    task: Dict[str, Any],
+    assignments: List[Dict[str, Any]],
+    deferred: List[Dict[str, Any]],
+    pending: List[Dict[str, Any]],
+) -> float:
+    """
+    Core score from scheduling quality.
+    Always returns a float strictly between 0.1001 and 0.9899.
+    """
+    total_candidates = max(1, len(task["candidates"]))
+    scheduled_count = len(assignments)
+
+    if assignments:
+        assignment_avg = sum(a["assignment_score"] for a in assignments) / len(assignments)
+    else:
+        assignment_avg = 0.0
+
+    coverage = scheduled_count / total_candidates
+
+    defer_penalty = 0.0
+    if deferred:
+        defer_penalty = sum(
+            ((c["urgency"] / 10.0) * 0.05) + ((c["deadline_pressure"] / 10.0) * 0.05)
+            for c in deferred
+        )
+
+    pending_penalty = 0.0
+    if pending:
+        pending_penalty = sum(
+            ((c["priority"] / 10.0) * 0.06) + ((c["urgency"] / 10.0) * 0.04)
+            for c in pending
+        )
+
+    raw = 0.23 + (0.57 * assignment_avg) + (0.30 * coverage) - defer_penalty - pending_penalty
+    return _clamp_open_interval(raw)
 
 
-def _apply_adjustments(base_score: float, adjustments: list[float]) -> float:
-    return _normalize_score(base_score + sum(adjustments))
+def _grade_easy_critical_backend(
+    task: Dict[str, Any], assignments: List[Dict[str, Any]], deferred: List[Dict[str, Any]], pending: List[Dict[str, Any]]
+) -> Tuple[float, str]:
+    base = compute_score(task, assignments, deferred, pending)
+    bonus = 0.0
+    hotfix = next((a for a in assignments if a["candidate"]["id"] == "c_backend_hotfix"), None)
+    if hotfix and hotfix["step"] <= 2:
+        bonus += 0.04
+    if any(c["id"] == "c_backend_hotfix" for c in deferred):
+        bonus -= 0.12
+    score = _clamp_open_interval(base + bonus)
+    return score, "Backend urgency emphasized; prioritize c_backend_hotfix early."
 
 
-def grade_easy_critical_backend(info: dict[str, Any]) -> float:
-    context = _ctx(info)
-    scheduled = _scheduled_ids(context)
-    return _apply_adjustments(context.score, [
-        0.03 if "cand_backend_1" in scheduled else -0.08,
-        0.015 if "cand_data_1" in scheduled else 0.0,
-        0.015 if "cand_frontend_1" in scheduled else 0.0,
-        0.02 if len(scheduled) == 3 else -0.02,
-        0.01 if _valid_ratio(context) == 1.0 else -0.03,
-    ])
+def _grade_medium_scarce_ml_specialist(
+    task: Dict[str, Any], assignments: List[Dict[str, Any]], deferred: List[Dict[str, Any]], pending: List[Dict[str, Any]]
+) -> Tuple[float, str]:
+    base = compute_score(task, assignments, deferred, pending)
+    ml_waste = 0
+    for a in assignments:
+        if a["interviewer"]["id"] == "i_ml_1" and a["candidate"]["required_specialization"] != "ml":
+            ml_waste += 1
+    score = _clamp_open_interval(base - (0.06 * ml_waste))
+    return score, "Scarce ML specialist slots should mostly serve ML-required candidates."
 
 
-def grade_medium_scarce_ml_specialist(info: dict[str, Any]) -> float:
-    context = _ctx(info)
-    scheduled = _scheduled_ids(context)
-    return _apply_adjustments(context.score, [
-        0.05 if "cand_ml_urgent" in scheduled else -0.1,
-        -0.05 if "cand_ml_nice" in scheduled and "cand_ml_urgent" not in scheduled else 0.0,
-        0.025 if "cand_general_backend" in scheduled else -0.015,
-        0.01 if _valid_ratio(context) == 1.0 else -0.03,
-    ])
+def _grade_hard_multi_tradeoff(
+    task: Dict[str, Any], assignments: List[Dict[str, Any]], deferred: List[Dict[str, Any]], pending: List[Dict[str, Any]]
+) -> Tuple[float, str]:
+    base = compute_score(task, assignments, deferred, pending)
+    specialization_hits = sum(1 for a in assignments if a["specialization_match"] >= 1.0)
+    modifier = 0.02 if specialization_hits >= 3 else -0.03
+    score = _clamp_open_interval(base + modifier)
+    return score, "Tradeoff task rewards broad high-quality specialization alignment."
 
 
-def grade_hard_multi_tradeoff(info: dict[str, Any]) -> float:
-    context = _ctx(info)
-    scheduled = _scheduled_ids(context)
-    critical_ids = {"cand_sec_critical", "cand_backend_urgent", "cand_data_urgent"}
-    return _apply_adjustments(context.score, [
-        0.045 * len(critical_ids & scheduled),
-        -0.06 if "cand_sec_critical" not in scheduled else 0.0,
-        -0.03 if "cand_sec_fit" in scheduled and "cand_sec_critical" not in scheduled else 0.0,
-        0.015 if "cand_frontend_fit" in scheduled else 0.0,
-        0.01 if _valid_ratio(context) == 1.0 else -0.04,
-    ])
+def _grade_medium_deadline_pressure(
+    task: Dict[str, Any], assignments: List[Dict[str, Any]], deferred: List[Dict[str, Any]], pending: List[Dict[str, Any]]
+) -> Tuple[float, str]:
+    base = compute_score(task, assignments, deferred, pending)
+    urgency_alignment = 0.0
+    for a in assignments:
+        cand_deadline = a["candidate"]["deadline_pressure"] / 10.0
+        slot_deadline = a["slot"]["deadline_pressure"] / 10.0
+        urgency_alignment += (cand_deadline * slot_deadline)
+    urgency_alignment = urgency_alignment / len(assignments) if assignments else 0.0
+    score = _clamp_open_interval(base + ((urgency_alignment - 0.5) * 0.08))
+    return score, "Deadline-pressure task rewards assigning urgent candidates to urgent slots."
 
 
-def grade_medium_deadline_pressure(info: dict[str, Any]) -> float:
-    context = _ctx(info)
-    scheduled = _scheduled_ids(context)
-    deadline_one_ids = {"cand_be_urgent1", "cand_fe_urgent1"}
-    return _apply_adjustments(context.score, [
-        0.035 * len(deadline_one_ids & scheduled),
-        -0.05 if not deadline_one_ids.issubset(scheduled) else 0.0,
-        0.02 if "cand_ml_urgent1" in scheduled else 0.0,
-        -0.015 if "cand_data_urgent1" not in scheduled else 0.0,
-        0.01 if _valid_ratio(context) == 1.0 else -0.03,
-    ])
+def _grade_hard_conflicting_priorities(
+    task: Dict[str, Any], assignments: List[Dict[str, Any]], deferred: List[Dict[str, Any]], pending: List[Dict[str, Any]]
+) -> Tuple[float, str]:
+    base = compute_score(task, assignments, deferred, pending)
+    top_ids = {"c_backend_star", "c_ml_star", "c_product_star"}
+    scheduled_top = sum(1 for a in assignments if a["candidate"]["id"] in top_ids)
+    deferred_top = sum(1 for c in deferred if c["id"] in top_ids)
+    modifier = (0.03 * scheduled_top) - (0.08 * deferred_top)
+    score = _clamp_open_interval(base + modifier)
+    return score, "Conflicting priorities task strongly favors placing top-priority candidates."
 
 
-def grade_hard_conflicting_priorities(info: dict[str, Any]) -> float:
-    context = _ctx(info)
-    scheduled = _scheduled_ids(context)
-    top_security_ids = {"cand_sec_high1", "cand_sec_high2"}
-    return _apply_adjustments(context.score, [
-        0.05 if scheduled & top_security_ids else -0.1,
-        -0.05 if "cand_sec_mid1" in scheduled and not (scheduled & top_security_ids) else 0.0,
-        0.02 if "cand_be_conf1" in scheduled else 0.0,
-        0.015 if "cand_fe_conf1" in scheduled else 0.0,
-        0.01 if _valid_ratio(context) == 1.0 else -0.03,
-    ])
-
-
-GRADERS = {
-    "easy_critical_backend": grade_easy_critical_backend,
-    "medium_scarce_ml_specialist": grade_medium_scarce_ml_specialist,
-    "hard_multi_tradeoff": grade_hard_multi_tradeoff,
-    "medium_deadline_pressure": grade_medium_deadline_pressure,
-    "hard_conflicting_priorities": grade_hard_conflicting_priorities,
+TASK_GRADERS = {
+    "easy_critical_backend": _grade_easy_critical_backend,
+    "medium_scarce_ml_specialist": _grade_medium_scarce_ml_specialist,
+    "hard_multi_tradeoff": _grade_hard_multi_tradeoff,
+    "medium_deadline_pressure": _grade_medium_deadline_pressure,
+    "hard_conflicting_priorities": _grade_hard_conflicting_priorities,
 }
 
 
-class SchedulerCore:
-    benchmark_name = "priority_hire"
+class PriorityHireEnv(Environment):
+    SUPPORTS_CONCURRENT_SESSIONS = True
+    MAX_ATTEMPTS = 12
 
-    def __init__(self, task_name: str = "easy_critical_backend") -> None:
-        self.reset(task_name=task_name)
+    def __init__(self):
+        self._state = PriorityHireState()
+        self._task: Optional[Dict[str, Any]] = None
+        self._attempt = 0
+        self._last_score = 0.0
+        self._pending_candidates: List[Dict[str, Any]] = []
+        self._deferred_candidates: List[Dict[str, Any]] = []
+        self._assignments: List[Dict[str, Any]] = []
+        self._occupied_slots: set = set()
 
-    def reset(self, task_name: str = "easy_critical_backend") -> dict[str, Any]:
-        if task_name not in TASKS:
-            raise ValueError(f"Unknown task_name: {task_name}")
-        self.task_name = task_name
-        self.task_definition = TASKS[task_name]
-        self.max_steps = self.task_definition["max_steps"]
-        self._candidates = {item["candidate_id"]: {**deepcopy(item), "status": "pending", "scheduled_slot": None, "scheduled_interviewer": None} for item in self.task_definition["candidates"]}
-        self._interviewers = {item["interviewer_id"]: {**deepcopy(item), "scheduled_count": 0} for item in self.task_definition["interviewers"]}
-        self._used_slots: set[Tuple[str, str]] = set()
-        self._schedule_log: List[Dict[str, object]] = []
-        self._step_count = 0
-        self._done = False
-        self._last_action_error: Optional[str] = None
-        self._last_action_summary: Optional[str] = "Environment reset"
-        return self._build_observation()
+    def _make_observation(self, done: bool, reward: float, feedback: str) -> PriorityHireObservation:
+        interviewer_pool = []
+        for interviewer in self._task["interviewers"]:
+            open_slots = [s for s in interviewer["slots"] if s["id"] not in self._occupied_slots]
+            interviewer_pool.append(
+                {
+                    "id": interviewer["id"],
+                    "name": interviewer["name"],
+                    "specializations": interviewer["specializations"],
+                    "available_slots": open_slots,
+                }
+            )
 
-    def step(self, action: PriorityHireAction) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
-        if self._done:
-            return self._build_observation(), -0.25, True, self._build_info()
-        self._step_count += 1
-        reward = 0.0
-        self._last_action_error = None
-        if action.kind == "schedule":
-            reward += self._handle_schedule(action)
-        elif action.kind == "defer":
-            reward += self._handle_defer(str(action.candidate_id))
-        else:
-            self._done = True
-            self._last_action_summary = "Scheduling batch submitted"
-        reward += self._advance_deadlines()
-        if self._step_count >= self.max_steps or self._all_candidates_terminal() or self._all_capacity_consumed():
-            self._done = True
-        return self._build_observation(), round(reward, 4), self._done, self._build_info()
-
-    def compute_score(self) -> float:
-        candidates = list(self._candidates.values())
-        scheduled = [c for c in candidates if c["status"] == "scheduled"]
-        unresolved = [c for c in candidates if c["status"] in {"pending", "missed"}]
-        total_priority_mass = sum(self._priority_mass(c) for c in candidates) or 1.0
-        scheduled_priority_mass = sum(self._priority_mass(c) for c in scheduled)
-        priority_correctness = scheduled_priority_mass / total_priority_mass
-        ideal_fit = sum(sorted((c["fit_score"] for c in candidates), reverse=True)[: len(scheduled)]) or 1.0
-        achieved_fit = sum(c["fit_score"] for c in scheduled)
-        fit_utilization = achieved_fit / ideal_fit if scheduled else 0.0
-        specialization_match = 1.0 if not scheduled else sum(1.0 for c in scheduled if self._scheduled_specialization(c["candidate_id"]) == c["required_specialization"]) / len(scheduled)
-        slot_validity = 1.0 if not self._schedule_log else sum(1.0 for item in self._schedule_log if item["valid"]) / len(self._schedule_log)
-        missed_mass = sum(self._priority_mass(c) for c in unresolved if c["status"] == "missed")
-        deadline_handling = max(0.0, 1.0 - (missed_mass / total_priority_mass))
-        scarce_slot_preservation = max(0.0, 1.0 - self._scarce_slot_waste_ratio())
-        efficiency = min(1.0, len(scheduled) / max(1, self._step_count))
-        if self._done and self._all_candidates_terminal():
-            efficiency = min(1.0, efficiency + 0.1)
-        return _normalize_score(
-            0.22 * priority_correctness
-            + 0.16 * fit_utilization
-            + 0.16 * specialization_match
-            + 0.12 * slot_validity
-            + 0.16 * deadline_handling
-            + 0.10 * scarce_slot_preservation
-            + 0.08 * efficiency
+        return PriorityHireObservation(
+            done=done,
+            reward=reward,
+            pending_candidates_queue=copy.deepcopy(self._pending_candidates),
+            interviewer_pool=interviewer_pool,
+            global_context=copy.deepcopy(self._task["global_context"]),
+            task_description=self._task["description"],
+            task_id=self._task["id"],
+            difficulty=self._task["difficulty"],
+            attempt_number=self._attempt,
+            max_attempts=self._task.get("max_attempts", self.MAX_ATTEMPTS),
+            feedback=feedback,
         )
 
-    def _handle_schedule(self, action: PriorityHireAction) -> float:
-        candidate = self._candidates.get(str(action.candidate_id))
-        interviewer = self._interviewers.get(str(action.interviewer_id))
-        if candidate is None or interviewer is None:
-            self._last_action_error = "unknown_candidate_or_interviewer"
-            self._last_action_summary = "Invalid schedule action"
-            self._schedule_log.append({"valid": False, "reason": self._last_action_error})
-            return -1.2
-        if candidate["status"] != "pending":
-            self._last_action_error = "candidate_not_pending"
-            self._last_action_summary = "Candidate was already processed"
-            self._schedule_log.append({"valid": False, "reason": self._last_action_error})
-            return -1.0
-        valid, error = self._is_valid_schedule(candidate, interviewer, str(action.slot_id))
-        if not valid:
-            self._last_action_error = error
-            self._last_action_summary = "Schedule action rejected"
-            self._schedule_log.append({"valid": False, "reason": error})
-            return -1.5
-        candidate["status"] = "scheduled"
-        candidate["scheduled_slot"] = action.slot_id
-        candidate["scheduled_interviewer"] = action.interviewer_id
-        interviewer["scheduled_count"] = int(interviewer["scheduled_count"]) + 1
-        self._used_slots.add((str(action.interviewer_id), str(action.slot_id)))
-        self._last_action_summary = f"Scheduled {action.candidate_id} with {action.interviewer_id} at {action.slot_id}"
-        self._schedule_log.append({"valid": True, "candidate_id": action.candidate_id, "interviewer_id": action.interviewer_id, "slot_id": action.slot_id})
-        return sum([
-            0.6,
-            0.1 * int(candidate["priority"]),
-            0.06 * int(candidate["urgency"]),
-            0.5 * float(candidate["fit_score"]),
-            0.35,
-            0.2,
-            self._deadline_reward(candidate),
-            self._scarce_slot_penalty(candidate, interviewer, str(action.slot_id)),
-            self._ordering_penalty(candidate, interviewer, str(action.slot_id)),
-            self._slot_efficiency_bonus(interviewer),
-        ])
+    def reset(
+        self,
+        seed=None,
+        episode_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        **kwargs,
+    ) -> PriorityHireObservation:
+        if seed is not None:
+            random.seed(seed)
 
-    def _handle_defer(self, candidate_id: str) -> float:
-        candidate = self._candidates.get(candidate_id)
-        if candidate is None:
-            self._last_action_error = "unknown_candidate"
-            self._last_action_summary = "Unknown candidate could not be deferred"
-            return -0.8
-        if candidate["status"] != "pending":
-            self._last_action_error = "candidate_not_pending"
-            self._last_action_summary = "Candidate was already processed"
-            return -0.6
-        schedulable = self._candidate_has_any_valid_schedule(candidate_id)
-        penalty = -0.15
-        if schedulable and self._priority_mass(candidate) >= 16:
-            penalty = -0.9
-        elif schedulable and self._priority_mass(candidate) >= 10:
-            penalty = -0.5
-        self._last_action_summary = f"Deferred candidate {candidate_id}"
-        return penalty
+        if task_id and task_id in TASKS:
+            self._task = copy.deepcopy(TASKS[task_id])
+        else:
+            self._task = copy.deepcopy(random.choice(list(TASKS.values())))
 
-    def _advance_deadlines(self) -> float:
-        penalty = 0.0
-        for candidate in self._candidates.values():
-            if candidate["status"] == "pending":
-                candidate["deadline"] = int(candidate["deadline"]) - 1
-                if int(candidate["deadline"]) < 0:
-                    candidate["status"] = "missed"
-                    penalty -= 1.0 + 0.12 * int(candidate["priority"]) + 0.08 * int(candidate["urgency"])
-        return penalty
+        self._attempt = 0
+        self._last_score = 0.0
+        self._pending_candidates = copy.deepcopy(self._task["candidates"])
+        self._deferred_candidates = []
+        self._assignments = []
+        self._occupied_slots = set()
 
-    def _build_observation(self) -> dict[str, Any]:
-        pending_candidates = [
-            {"candidate_id": item["candidate_id"], "role": item["role"], "priority": int(item["priority"]), "urgency": int(item["urgency"]), "fit_score": float(item["fit_score"]), "deadline": int(item["deadline"]), "available_slots": list(item["available_slots"]), "required_specialization": item["required_specialization"], "status": item["status"]}
-            for item in self._candidates.values() if item["status"] == "pending"
-        ]
-        pending_candidates.sort(key=lambda c: (-(c["priority"] * 10 + c["urgency"] * 3 + c["fit_score"]), c["deadline"], c["candidate_id"]))
-        interviewer_pool = [
-            {"interviewer_id": item["interviewer_id"], "specialization": item["specialization"], "available_slots": list(item["available_slots"]), "max_capacity": int(item["max_capacity"]), "scheduled_count": int(item["scheduled_count"])}
-            for item in self._interviewers.values()
-        ]
-        interviewer_pool.sort(key=lambda i: i["interviewer_id"])
-        return {
-            "pending_candidates_queue": pending_candidates,
-            "interviewer_pool": interviewer_pool,
-            "global_context": {"remaining_slots": self._remaining_capacity(), "remaining_candidates": len(pending_candidates), "remaining_critical_candidates": sum(1 for c in pending_candidates if c["priority"] >= 4 or c["urgency"] >= 4), "step_count": self._step_count, "max_steps": self.max_steps, "task_name": self.task_name, "benchmark": self.benchmark_name},
-            "last_action_error": self._last_action_error,
-            "last_action_summary": self._last_action_summary,
-        }
+        self._state = PriorityHireState(
+            episode_id=episode_id or str(uuid.uuid4()),
+            step_count=0,
+            task_id=self._task["id"],
+            difficulty=self._task["difficulty"],
+            max_attempts=self._task.get("max_attempts", self.MAX_ATTEMPTS),
+            last_score=0.0,
+            completed=False,
+            scheduled_candidates=[],
+            deferred_candidates=[],
+        )
 
-    def _build_info(self) -> dict[str, Any]:
-        return {"task_name": self.task_name, "benchmark": self.benchmark_name, "score": self.compute_score(), "done_reason": self._done_reason(), "schedule_log": deepcopy(self._schedule_log)}
+        return self._make_observation(
+            done=False,
+            reward=0.0,
+            feedback="Episode started. Use schedule(candidate_id, interviewer_id, slot_id), defer(candidate_id), then submit().",
+        )
 
-    def _done_reason(self) -> str:
-        if not self._done:
-            return "in_progress"
-        if self._step_count >= self.max_steps:
-            return "max_steps"
-        if self._all_candidates_terminal():
-            return "all_candidates_processed"
-        if self._all_capacity_consumed():
-            return "all_slots_filled"
-        return "submitted"
+    def step(
+        self,
+        action: PriorityHireAction,
+        timeout_s=None,
+        **kwargs,
+    ) -> PriorityHireObservation:
+        self._attempt += 1
+        self._state.step_count += 1
 
-    def _is_valid_schedule(self, candidate: Dict[str, object], interviewer: Dict[str, object], slot_id: str) -> Tuple[bool, Optional[str]]:
-        if slot_id not in candidate["available_slots"]:
-            return False, "candidate_unavailable_for_slot"
-        if slot_id not in interviewer["available_slots"]:
-            return False, "interviewer_unavailable_for_slot"
-        if interviewer["specialization"] != candidate["required_specialization"]:
-            return False, "specialization_mismatch"
-        if int(interviewer["scheduled_count"]) >= int(interviewer["max_capacity"]):
-            return False, "interviewer_at_capacity"
-        if (interviewer["interviewer_id"], slot_id) in self._used_slots:
-            return False, "slot_already_used"
-        return True, None
+        feedback_parts: List[str] = []
+        done = False
 
-    def _candidate_has_any_valid_schedule(self, candidate_id: str) -> bool:
-        candidate = self._candidates[candidate_id]
-        return any(self._is_valid_schedule(candidate, interviewer, slot_id)[0] for interviewer in self._interviewers.values() for slot_id in candidate["available_slots"])
+        action_type = (action.action_type or "").strip().lower()
+        if action_type not in {"schedule", "defer", "submit"}:
+            feedback_parts.append("Invalid action_type. Allowed: schedule, defer, submit.")
 
-    def _priority_mass(self, candidate: Dict[str, object]) -> float:
-        return float(int(candidate["priority"]) * 2 + int(candidate["urgency"]) * 1.5 + float(candidate["fit_score"]) * 2)
+        elif action_type == "schedule":
+            candidate = _find_candidate(self._pending_candidates, action.candidate_id)
+            interviewer = _find_interviewer(self._task, action.interviewer_id)
+            if not candidate:
+                feedback_parts.append(f"Candidate '{action.candidate_id}' is not in pending queue.")
+            elif not interviewer:
+                feedback_parts.append(f"Interviewer '{action.interviewer_id}' not found.")
+            else:
+                slot = _find_slot(interviewer, action.slot_id)
+                if not slot:
+                    feedback_parts.append(f"Slot '{action.slot_id}' not found for interviewer '{interviewer['id']}'.")
+                elif slot["id"] in self._occupied_slots:
+                    feedback_parts.append(f"Slot '{action.slot_id}' is already occupied.")
+                else:
+                    spec_match = _specialization_match(candidate, interviewer)
+                    assignment_score = _score_assignment(candidate, interviewer, slot)
+                    self._assignments.append(
+                        {
+                            "step": self._attempt,
+                            "candidate": copy.deepcopy(candidate),
+                            "interviewer": copy.deepcopy(interviewer),
+                            "slot": copy.deepcopy(slot),
+                            "specialization_match": spec_match,
+                            "assignment_score": assignment_score,
+                        }
+                    )
+                    self._occupied_slots.add(slot["id"])
+                    self._pending_candidates = [c for c in self._pending_candidates if c["id"] != candidate["id"]]
+                    feedback_parts.append(
+                        f"Scheduled {candidate['id']} with {interviewer['id']} at {slot['id']} (fit={candidate['fit_scores'].get(interviewer['id'], 0.0):.2f})."
+                    )
 
-    def _deadline_reward(self, candidate: Dict[str, object]) -> float:
-        deadline = int(candidate["deadline"])
-        return 0.55 if deadline <= 0 else 0.35 if deadline == 1 else 0.15 if deadline == 2 else 0.05
+        elif action_type == "defer":
+            candidate = _find_candidate(self._pending_candidates, action.candidate_id)
+            if not candidate:
+                feedback_parts.append(f"Candidate '{action.candidate_id}' is not in pending queue.")
+            else:
+                self._deferred_candidates.append(candidate)
+                self._pending_candidates = [c for c in self._pending_candidates if c["id"] != candidate["id"]]
+                feedback_parts.append(f"Deferred candidate {candidate['id']}.")
 
-    def _scarce_slot_penalty(self, candidate: Dict[str, object], interviewer: Dict[str, object], slot_id: str) -> float:
-        if not self._is_interviewer_scarce(str(interviewer["interviewer_id"])):
-            return 0.0
-        higher_priority_waiting = any(other["status"] == "pending" and other["required_specialization"] == interviewer["specialization"] and self._priority_mass(other) > self._priority_mass(candidate) and slot_id in other["available_slots"] for other in self._candidates.values() if other["candidate_id"] != candidate["candidate_id"])
-        if higher_priority_waiting and int(candidate["priority"]) <= 2:
-            return -0.9
-        return -0.4 if higher_priority_waiting else 0.0
+        elif action_type == "submit":
+            grader = TASK_GRADERS[self._task["id"]]
+            final_score, grader_feedback = grader(
+                self._task,
+                self._assignments,
+                self._deferred_candidates,
+                self._pending_candidates,
+            )
+            self._last_score = final_score
+            self._state.last_score = final_score
+            self._state.completed = final_score >= 0.85
+            done = True
+            feedback_parts.append(grader_feedback)
+            feedback_parts.append(f"Final score: {final_score:.4f}")
 
-    def _ordering_penalty(self, candidate: Dict[str, object], interviewer: Dict[str, object], slot_id: str) -> float:
-        current_mass = self._priority_mass(candidate)
-        for other in self._candidates.values():
-            if other["status"] != "pending" or other["candidate_id"] == candidate["candidate_id"]:
-                continue
-            if other["required_specialization"] != interviewer["specialization"]:
-                continue
-            if slot_id not in other["available_slots"]:
-                continue
-            if self._priority_mass(other) >= current_mass + 4:
-                return -0.7
-        return 0.0
+        if not done:
+            provisional = compute_score(
+                self._task,
+                self._assignments,
+                self._deferred_candidates,
+                self._pending_candidates,
+            )
+            self._last_score = provisional
+            self._state.last_score = provisional
 
-    def _slot_efficiency_bonus(self, interviewer: Dict[str, object]) -> float:
-        return 0.08 if int(interviewer["max_capacity"]) - int(interviewer["scheduled_count"]) == 0 else 0.02
+            if self._attempt >= self._task.get("max_attempts", self.MAX_ATTEMPTS):
+                done = True
+                feedback_parts.append("Max attempts reached; auto-submitting current schedule.")
+                grader = TASK_GRADERS[self._task["id"]]
+                final_score, grader_feedback = grader(
+                    self._task,
+                    self._assignments,
+                    self._deferred_candidates,
+                    self._pending_candidates,
+                )
+                self._last_score = final_score
+                self._state.last_score = final_score
+                self._state.completed = final_score >= 0.85
+                feedback_parts.append(grader_feedback)
+                feedback_parts.append(f"Final score: {final_score:.4f}")
 
-    def _scheduled_specialization(self, candidate_id: str) -> Optional[str]:
-        interviewer_id = self._candidates[candidate_id]["scheduled_interviewer"]
-        interviewer = self._interviewers.get(str(interviewer_id)) if interviewer_id else None
-        return None if interviewer is None else str(interviewer["specialization"])
+        self._state.scheduled_candidates = [a["candidate"]["id"] for a in self._assignments]
+        self._state.deferred_candidates = [c["id"] for c in self._deferred_candidates]
 
-    def _scarce_slot_waste_ratio(self) -> float:
-        scarce_ids = [i for i in self._interviewers if self._is_interviewer_scarce(i)]
-        if not scarce_ids:
-            return 0.0
-        waste = 0.0
-        total = 0.0
-        for interviewer_id in scarce_ids:
-            interviewer = self._interviewers[interviewer_id]
-            relevant = [candidate for candidate in self._candidates.values() if candidate["required_specialization"] == interviewer["specialization"]]
-            if not relevant:
-                continue
-            total += 1.0
-            scheduled = [candidate for candidate in relevant if candidate["scheduled_interviewer"] == interviewer_id]
-            if scheduled:
-                best_mass = max(self._priority_mass(candidate) for candidate in relevant)
-                chosen_mass = max(self._priority_mass(candidate) for candidate in scheduled)
-                waste += max(0.0, (best_mass - chosen_mass) / max(best_mass, 1.0))
-        return waste / total if total else 0.0
-
-    def _is_interviewer_scarce(self, interviewer_id: str) -> bool:
-        interviewer = self._interviewers[interviewer_id]
-        same_specialty = [other for other in self._interviewers.values() if other["specialization"] == interviewer["specialization"]]
-        total_capacity = sum(int(other["max_capacity"]) for other in same_specialty)
-        total_demand = sum(1 for candidate in self._candidates.values() if candidate["required_specialization"] == interviewer["specialization"])
-        return total_capacity <= total_demand
-
-    def _remaining_capacity(self) -> int:
-        return sum(max(0, int(item["max_capacity"]) - int(item["scheduled_count"])) for item in self._interviewers.values())
-
-    def _all_candidates_terminal(self) -> bool:
-        return all(item["status"] in {"scheduled", "missed"} for item in self._candidates.values())
-
-    def _all_capacity_consumed(self) -> bool:
-        return self._remaining_capacity() <= 0
-
-
-def _intersect(left: Iterable[str], right: Iterable[str]) -> List[str]:
-    right_set = set(right)
-    return sorted(item for item in left if item in right_set)
-
-
-def _best_valid_schedule(observation: PriorityHireObservation, candidate_id: str) -> Optional[PriorityHireAction]:
-    candidate = next((item for item in observation.pending_candidates_queue if item["candidate_id"] == candidate_id), None)
-    if candidate is None:
-        return None
-    same_specialization = [item["candidate_id"] for item in observation.pending_candidates_queue if item["required_specialization"] == candidate["required_specialization"]]
-    remaining_capacity = sum(interviewer["max_capacity"] - interviewer["scheduled_count"] for interviewer in observation.interviewer_pool if interviewer["specialization"] == candidate["required_specialization"])
-    scarce = remaining_capacity <= len(same_specialization)
-    best_score = None
-    best_action = None
-    for interviewer in observation.interviewer_pool:
-        if interviewer["specialization"] != candidate["required_specialization"] or interviewer["scheduled_count"] >= interviewer["max_capacity"]:
-            continue
-        for slot_id in _intersect(candidate["available_slots"], interviewer["available_slots"]):
-            score = candidate["priority"] * 2.3 + candidate["urgency"] * 1.8 + candidate["fit_score"] * 2.5 - candidate["deadline"] * 0.5 + (0.3 if scarce and candidate["priority"] >= 4 else 0.0)
-            value = (score, -interviewer["scheduled_count"], slot_id, interviewer["interviewer_id"])
-            if best_score is None or value > best_score:
-                best_score = value
-                best_action = PriorityHireAction(kind="schedule", candidate_id=candidate["candidate_id"], interviewer_id=interviewer["interviewer_id"], slot_id=slot_id)
-    return best_action
-
-
-def priority_fit_policy(observation: PriorityHireObservation) -> PriorityHireAction:
-    candidates = sorted(observation.pending_candidates_queue, key=lambda item: (-(item["priority"] * 2.5 + item["urgency"] * 2.0 + item["fit_score"] * 3.0 - item["deadline"] * 0.4), item["deadline"], item["candidate_id"]))
-    if not candidates:
-        return PriorityHireAction(kind="submit")
-    for candidate in candidates:
-        action = _best_valid_schedule(observation, candidate["candidate_id"])
-        if action:
-            return action
-    return PriorityHireAction(kind="defer", candidate_id=candidates[0]["candidate_id"])
-
-
-class PriorityHireEnvironment(Environment[PriorityHireAction, PriorityHireObservation, PriorityHireState]):
-    SUPPORTS_CONCURRENT_SESSIONS = True
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._episode_id: str | None = None
-        self._core = SchedulerCore()
-
-    def reset(self, seed: Optional[int] = None, episode_id: Optional[str] = None, **kwargs: Any) -> PriorityHireObservation:
-        del seed
-        task_name = kwargs.get("task_name") or kwargs.get("task_id") or "easy_critical_backend"
-        self._episode_id = episode_id or str(uuid.uuid4())
-        return self._to_observation(self._core.reset(task_name=task_name), None, False)
-
-    def step(self, action: PriorityHireAction, timeout_s: Optional[float] = None, **kwargs: Any) -> PriorityHireObservation:
-        del timeout_s, kwargs
-        observation, reward, done, _ = self._core.step(action)
-        return self._to_observation(observation, reward, done)
+        return self._make_observation(
+            done=done,
+            reward=self._last_score,
+            feedback=" | ".join(feedback_parts) if feedback_parts else "No-op action.",
+        )
 
     @property
     def state(self) -> PriorityHireState:
-        info = self._core._build_info()
-        obs = self._core._build_observation()
-        return PriorityHireState(episode_id=self._episode_id, step_count=int(obs["global_context"]["step_count"]), task_name=str(info["task_name"]), max_steps=int(obs["global_context"]["max_steps"]), score=float(info["score"]), done=self._core._done, done_reason=str(info["done_reason"]), schedule_log=list(info["schedule_log"]))
+        return self._state
 
-    def get_metadata(self) -> EnvironmentMetadata:
-        return EnvironmentMetadata(name="PriorityHireEnv", description="Dynamic interview scheduling environment for priority-aware hiring batches.", version="0.1.0")
+    def get_last_score(self) -> float:
+        return self._last_score
 
-    @staticmethod
-    def list_tasks() -> list[dict[str, Any]]:
-        return [{"id": task_name, "name": task["name"], "difficulty": task["difficulty"], "description": task["description"], "max_steps": task["max_steps"], "grader": GRADERS[task_name].__name__} for task_name, task in TASKS.items()]
+    def get_current_task(self) -> Dict[str, Any]:
+        return self._task or {}
 
     @staticmethod
-    def run_grader(task_name: str, info: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        if task_name not in GRADERS:
-            raise ValueError(f"Unknown task_name: {task_name}")
-        final_info = info or run_task_with_policy(task_name)
-        return {"task_name": task_name, "grader": GRADERS[task_name].__name__, "score": GRADERS[task_name](final_info)}
+    def list_tasks() -> List[Dict[str, Any]]:
+        return [
+            {
+                "task_id": t["id"],
+                "difficulty": t["difficulty"],
+                "description": t["description"],
+                "action_schema": {
+                    "action_type": "string - one of: schedule | defer | submit",
+                    "candidate_id": "string - required for schedule/defer",
+                    "interviewer_id": "string - required for schedule",
+                    "slot_id": "string - required for schedule",
+                    "explanation": "string (optional) - strategy trace",
+                },
+            }
+            for t in TASKS.values()
+        ]
 
-    def _to_observation(self, observation: dict[str, Any], reward: Optional[float], done: bool) -> PriorityHireObservation:
-        info = self._core._build_info()
-        return PriorityHireObservation(done=done, reward=reward, pending_candidates_queue=observation["pending_candidates_queue"], interviewer_pool=observation["interviewer_pool"], global_context=observation["global_context"], last_action_error=observation.get("last_action_error"), last_action_summary=observation.get("last_action_summary"), task_name=str(info["task_name"]), score=float(info["score"]), done_reason=str(info["done_reason"]), schedule_log=list(info["schedule_log"]))
+    @staticmethod
+    def run_grader(task_id: str, plan_json: str) -> Dict[str, Any]:
+        if task_id not in TASKS:
+            return {"error": f"Unknown task_id: {task_id}."}
+
+        try:
+            raw_plan = json.loads(plan_json) if plan_json else []
+        except Exception as exc:
+            return {"error": f"Invalid plan_json: {exc}"}
+
+        if not isinstance(raw_plan, list):
+            return {"error": "plan_json must decode to a list of action objects."}
+
+        env = PriorityHireEnv()
+        env.reset(task_id=task_id)
+
+        history: List[Dict[str, Any]] = []
+        last_obs = None
+
+        for item in raw_plan:
+            action = PriorityHireAction(
+                action_type=str(item.get("action_type", "submit")),
+                candidate_id=str(item.get("candidate_id", "")),
+                interviewer_id=str(item.get("interviewer_id", "")),
+                slot_id=str(item.get("slot_id", "")),
+                explanation=str(item.get("explanation", "")),
+            )
+            last_obs = env.step(action)
+            history.append({
+                "action": item,
+                "reward": last_obs.reward,
+                "done": last_obs.done,
+                "feedback": last_obs.feedback,
+            })
+            if last_obs.done:
+                break
+
+        if not last_obs or not last_obs.done:
+            last_obs = env.step(PriorityHireAction.submit("auto-submit"))
+            history.append({
+                "action": {"action_type": "submit"},
+                "reward": last_obs.reward,
+                "done": last_obs.done,
+                "feedback": last_obs.feedback,
+            })
+
+        return {
+            "task_id": task_id,
+            "score": float(last_obs.reward or 0.0),
+            "feedback": last_obs.feedback,
+            "passed": bool((last_obs.reward or 0.0) >= 0.85),
+            "steps": history,
+        }
 
 
-def run_task_with_policy(task_name: str) -> dict[str, Any]:
-    core = SchedulerCore(task_name=task_name)
-    done = False
-    total_reward = 0.0
-    info = core._build_info()
-    steps = 0
-    while not done:
-        observation = core._build_observation()
-        obs = PriorityHireObservation(done=False, reward=None, pending_candidates_queue=observation["pending_candidates_queue"], interviewer_pool=observation["interviewer_pool"], global_context=observation["global_context"], last_action_error=observation.get("last_action_error"), last_action_summary=observation.get("last_action_summary"), task_name=str(info["task_name"]), score=float(info["score"]), done_reason=str(info["done_reason"]), schedule_log=list(info["schedule_log"]))
-        action = priority_fit_policy(obs)
-        _, reward, done, info = core.step(action)
-        total_reward += reward
-        steps += 1
-    return {"task_name": task_name, "score": info["score"], "steps": steps, "reward_sum": round(total_reward, 4), "done_reason": info["done_reason"], "schedule_log": list(info["schedule_log"]), "grader_score": GRADERS[task_name](info)}
-
-
-__all__ = ["GRADERS", "MAX_SCORE", "MIN_SCORE", "PriorityHireEnvironment", "SchedulerCore", "TASKS", "list_task_names", "priority_fit_policy", "run_task_with_policy"]
+PriorityHireEnvironment = PriorityHireEnv

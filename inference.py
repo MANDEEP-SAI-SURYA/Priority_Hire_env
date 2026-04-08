@@ -1,40 +1,41 @@
-import asyncio
+"""
+inference.py - PriorityHire interview scheduling baseline agent.
+"""
+
 import json
 import os
-import textwrap
-from typing import List, Optional
+import sys
+from typing import Dict, List, Optional
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT)
 
 from openai import OpenAI
+from client import PriorityHireEnv
+from models import PriorityHireAction
 
-from client import PriorityHireAction, PriorityHireEnv
-from server.environment import priority_fit_policy
+HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+SPACE_URL = os.getenv("SPACE_URL", "https://priorityhire-env.hf.space")
+BENCHMARK = "priorityhire-env"
+TASK_IDS = [
+    "easy_critical_backend",
+    "medium_scarce_ml_specialist",
+    "hard_multi_tradeoff",
+    "medium_deadline_pressure",
+    "hard_conflicting_priorities",
+]
+MAX_STEPS = 12
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-TASK_NAME = os.getenv("PRIORITY_HIRE_TASK", "easy_critical_backend")
-BENCHMARK = os.getenv("PRIORITY_HIRE_BENCHMARK", "priority_hire")
-MAX_STEPS = 16
-TEMPERATURE = 0.2
-MAX_TOKENS = 220
-SUCCESS_SCORE_THRESHOLD = 0.65
-
-SYSTEM_PROMPT = textwrap.dedent(
-    """
-    You are scheduling interviews in PriorityHireEnv.
-    Return exactly one JSON action object.
-
-    Valid actions:
-    {"kind":"schedule","candidate_id":"...","interviewer_id":"...","slot_id":"..."}
-    {"kind":"defer","candidate_id":"..."}
-    {"kind":"submit"}
-
-    Prioritize urgent critical roles, specialization correctness, scarce specialist preservation,
-    deadline risk reduction, and fit quality.
-    """
-).strip()
+SYSTEM_PROMPT = """You schedule candidates into interviewer slots.
+Output ONLY valid compact JSON with keys:
+{"action_type":"schedule|defer|submit","candidate_id":"","interviewer_id":"","slot_id":""}
+Rules:
+- Use action_type=schedule with all ids for a booking.
+- Use action_type=defer with candidate_id only.
+- Use action_type=submit when planning is complete.
+"""
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -43,125 +44,170 @@ def log_start(task: str, env: str, model: str) -> None:
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
+    done_val = str(done).lower()
+    action_clean = action.replace("\n", " ")[:120]
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}",
+        f"[STEP] step={step} action={action_clean!r} reward={reward:.4f} done={done_val} error={error_val}",
         flush=True,
     )
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    rewards_str = ",".join(f"{r:.4f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
-def build_user_prompt(state: dict) -> str:
-    return textwrap.dedent(
-        f"""
-        Current state:
-        {json.dumps(state, indent=2)}
+def build_prompt(obs) -> str:
+    parts = [
+        f"Task: {obs.task_description}",
+        "",
+        f"Global Context: {json.dumps(obs.global_context, ensure_ascii=True)}",
+        "",
+        f"Pending Candidates: {json.dumps(obs.pending_candidates_queue, ensure_ascii=True)}",
+        "",
+        f"Interviewer Pool: {json.dumps(obs.interviewer_pool, ensure_ascii=True)}",
+    ]
+    if obs.feedback and obs.attempt_number > 0:
+        parts += ["", f"Environment feedback: {obs.feedback}"]
+    parts += ["", "Return next action JSON only."]
+    return "\n".join(parts)
 
-        Return one valid JSON action only.
-        """
-    ).strip()
 
-
-def choose_action_with_model(client: OpenAI, observation_dict: dict) -> Optional[dict]:
-    if not API_KEY:
-        return None
+def parse_action(raw: str) -> Dict[str, str]:
+    text = raw.strip().replace("```json", "").replace("```", "").strip()
     try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(observation_dict)},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            response_format={"type": "json_object"},
-        )
-        content = (completion.choices[0].message.content or "").strip()
-        return json.loads(content)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return {
+                "action_type": str(obj.get("action_type", "submit")),
+                "candidate_id": str(obj.get("candidate_id", "")),
+                "interviewer_id": str(obj.get("interviewer_id", "")),
+                "slot_id": str(obj.get("slot_id", "")),
+            }
     except Exception:
-        return None
+        pass
+    return {"action_type": "submit", "candidate_id": "", "interviewer_id": "", "slot_id": ""}
 
 
-def action_to_log_string(action) -> str:
-    if getattr(action, "kind", None) == "schedule":
-        return f"schedule({action.candidate_id},{action.interviewer_id},{action.slot_id})"
-    if getattr(action, "kind", None) == "defer":
-        return f"defer({action.candidate_id})"
-    return "submit()"
-
-
-def coerce_action(model_action: Optional[dict], fallback_action):
-    if not model_action or not isinstance(model_action, dict):
-        return fallback_action
-    kind = model_action.get("kind")
-    if kind == "schedule" and {"candidate_id", "interviewer_id", "slot_id"} <= set(model_action):
-        return PriorityHireAction(
-            kind="schedule",
-            candidate_id=model_action.get("candidate_id"),
-            interviewer_id=model_action.get("interviewer_id"),
-            slot_id=model_action.get("slot_id"),
-        )
-    if kind == "defer" and "candidate_id" in model_action:
-        return PriorityHireAction(kind="defer", candidate_id=model_action.get("candidate_id"))
-    if kind == "submit":
-        return PriorityHireAction(kind="submit")
-    return fallback_action
-
-
-async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "missing-token")
-    if not IMAGE_NAME:
-        raise RuntimeError("Missing LOCAL_IMAGE_NAME or IMAGE_NAME for from_docker_image()")
-
-    env = await PriorityHireEnv.from_docker_image(IMAGE_NAME)
-
+def run_task(env, client, model_name: str, task_id: str) -> float:
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_id, env=BENCHMARK, model=model_name)
 
     try:
-        transition = await env.reset(task_name=TASK_NAME)
-        observation = transition.observation
-        done = False
+        result = env.reset(task_id=task_id)
+        obs = result.observation
 
         for step in range(1, MAX_STEPS + 1):
-            if done:
+            if result.done:
                 break
 
-            fallback_action = priority_fit_policy(observation)
-            model_action = choose_action_with_model(client, observation.model_dump())
-            action = coerce_action(model_action, fallback_action)
+            prompt = build_prompt(obs)
 
-            transition = await env.step(action)
-            observation = transition.observation
-            reward = float(transition.reward or 0.0)
-            done = transition.done
-            error = observation.last_action_error
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=220,
+                stream=False,
+            )
+            raw_action = (response.choices[0].message.content or "").strip()
+            action_obj = parse_action(raw_action)
+
+            action = PriorityHireAction(
+                action_type=action_obj["action_type"],
+                candidate_id=action_obj["candidate_id"],
+                interviewer_id=action_obj["interviewer_id"],
+                slot_id=action_obj["slot_id"],
+            )
+
+            result = env.step(action)
+            obs = result.observation
+            reward = result.reward or 0.0
+            done = result.done
+            error = None
 
             rewards.append(reward)
             steps_taken = step
-            score = float(getattr(observation, "score", 0.0))
 
-            log_step(step=step, action=action_to_log_string(action), reward=reward, done=done, error=error)
+            log_step(step=step, action=json.dumps(action_obj), reward=reward, done=done, error=error)
 
             if done:
                 break
 
-        success = score >= SUCCESS_SCORE_THRESHOLD
+            if not obs.pending_candidates_queue and not done:
+                result = env.step(PriorityHireAction.submit("auto-submit-empty-queue"))
+                obs = result.observation
+                reward = result.reward or 0.0
+                done = result.done
+                rewards.append(reward)
+                steps_taken = step
+                log_step(step=step, action='{"action_type":"submit"}', reward=reward, done=done, error=None)
+                if done:
+                    break
 
-    except Exception as exc:
-        print(f"[ERROR] {type(exc).__name__}: {exc}", flush=True)
-        raise
+        score = max(rewards) if rewards else 0.0
+        score = min(max(score, 0.0), 1.0)
+        success = score >= 0.85
+
+    except Exception as e:
+        print(f"[DEBUG] Task error: {e}", flush=True)
+        score = 0.0
+        success = False
+
     finally:
-        await env.close()
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
+
+
+def main():
+    api_base_url = os.environ["API_BASE_URL"]
+    api_key = os.environ["API_KEY"]
+    model_name = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+
+    print(f"[DEBUG] API_BASE_URL={api_base_url}", flush=True)
+    print(f"[DEBUG] MODEL_NAME={model_name}", flush=True)
+    print(f"[DEBUG] SPACE_URL={SPACE_URL}", flush=True)
+    print(f"[DEBUG] API_KEY present={bool(api_key)}", flush=True)
+
+    client = OpenAI(base_url=api_base_url, api_key=api_key)
+
+    all_scores = {}
+
+    try:
+        env_client = PriorityHireEnv(base_url=SPACE_URL)
+        with env_client.sync() as env:
+            for task_id in TASK_IDS:
+                try:
+                    score = run_task(env, client, model_name, task_id)
+                except Exception as e:
+                    print(f"[DEBUG] Task {task_id} error: {e}", flush=True)
+                    log_start(task=task_id, env=BENCHMARK, model=model_name)
+                    log_end(success=False, steps=0, score=0.0, rewards=[0.0])
+                    score = 0.0
+                all_scores[task_id] = score
+
+    except Exception as e:
+        print(f"[DEBUG] Connection error: {e}", flush=True)
+        for task_id in TASK_IDS:
+            if task_id not in all_scores:
+                log_start(task=task_id, env=BENCHMARK, model=model_name)
+                log_end(success=False, steps=0, score=0.0, rewards=[0.0])
+                all_scores[task_id] = 0.0
+
+    avg = sum(all_scores.values()) / len(all_scores) if all_scores else 0.0
+    print(f"[SUMMARY] scores={all_scores} average={avg:.4f}", flush=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

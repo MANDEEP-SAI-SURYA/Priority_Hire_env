@@ -1,40 +1,102 @@
-spec_version: 1
 name: priority_hire_env
-version: "0.1.0"
-description: Dynamic interview scheduling environment for priority-aware hiring batches.
-type: environment
-runtime: fastapi
-app: server.app:app
-action: PriorityHireAction
-observation: PriorityHireObservation
-entrypoint:
-  module: server.environment
-  class: PriorityHireEnvironment
-server:
-  module: server.app
-  app: app
-models:
-  observation: models.PriorityHireObservation
-  action: models.PriorityHireAction
-# tasks:
-#   - easy_critical_backend
-#   - medium_scarce_ml_specialist
-#   - hard_multi_tradeoff
+version: "1.0.0"
+description: >
+  PriorityHire interview scheduling environment for AI agent training.
+  An agent schedules candidates to interviewers and slots while balancing
+  priority, urgency, fit, specialization match, and deadline pressure.
+
+author: "Your Team Name"
+tags:
+  - openenv
+  - interview-scheduling
+  - hiring
+  - optimization
+  - real-world
 
 tasks:
-  - name: easy_critical_backend
-    grader: server.environment.grade_easy_critical_backend
-  - name: medium_scarce_ml_specialist
-    grader: server.environment.grade_medium_scarce_ml_specialist
-  - name: hard_multi_tradeoff
-    grader: server.environment.grade_hard_multi_tradeoff
-  - name: medium_deadline_pressure
-    grader: server.environment.grade_medium_deadline_pressure
-  - name: hard_conflicting_priorities
-    grader: server.environment.grade_hard_conflicting_priorities
-baselines:
-  - fifo
-  - priority_only
-  - fit_only
-  - priority_fit
-inference_script: inference.py
+  - id: easy_critical_backend
+    description: "Schedule critical backend candidates with urgent timelines"
+    difficulty: easy
+    max_attempts: 10
+    scoring: "strictly between 0.1001 and 0.9899"
+
+  - id: medium_scarce_ml_specialist
+    description: "Allocate scarce ML specialist capacity"
+    difficulty: medium
+    max_attempts: 12
+    scoring: "strictly between 0.1001 and 0.9899"
+
+  - id: hard_multi_tradeoff
+    description: "Balance multiple competing scheduling tradeoffs"
+    difficulty: hard
+    max_attempts: 12
+    scoring: "strictly between 0.1001 and 0.9899"
+
+  - id: medium_deadline_pressure
+    description: "Schedule under strict deadline pressure"
+    difficulty: medium
+    max_attempts: 10
+    scoring: "strictly between 0.1001 and 0.9899"
+
+  - id: hard_conflicting_priorities
+    description: "Resolve conflicting high-priority scheduling constraints"
+    difficulty: hard
+    max_attempts: 14
+    scoring: "strictly between 0.1001 and 0.9899"
+
+observation_space:
+  pending_candidates_queue: "array<object> - ordered pending candidate queue"
+  interviewer_pool:         "array<object> - interviewers with available slots"
+  global_context:           "object - scenario objectives and constraints"
+  task_description:         "string - scenario objective"
+  task_id:                  "string - active task id"
+  difficulty:               "string - easy | medium | hard"
+  attempt_number:           "int - current action count"
+  max_attempts:             "int - max allowed actions"
+  feedback:                 "string - scheduler/grader feedback"
+
+action_space:
+  action_type:    "string (required) - schedule | defer | submit"
+  candidate_id:   "string (required for schedule/defer)"
+  interviewer_id: "string (required for schedule)"
+  slot_id:        "string (required for schedule)"
+  explanation:    "string (optional) - reasoning"
+
+reward:
+  type: continuous
+  range: [0.1001, 0.9899]
+  shaping:
+    - "priority weighting"
+    - "urgency weighting"
+    - "fit score weighting"
+    - "specialization match weighting"
+    - "deadline pressure weighting"
+
+endpoints:
+  - path: /reset
+    method: POST
+    description: Start a new episode
+  - path: /step
+    method: POST
+    description: Submit next scheduling action
+  - path: /state
+    method: GET
+    description: Get current episode metadata
+  - path: /tasks
+    method: GET
+    description: List all tasks with action schema
+  - path: /grader
+    method: POST
+    description: Grade an action plan without running a full live loop
+  - path: /baseline
+    method: GET
+    description: Run oracle baseline and return scores for all 5 tasks
+  - path: /health
+    method: GET
+    description: Health check
+
+runtime:
+  framework: FastAPI + OpenEnv
+  python: "3.11"
+  docker: true
+  hf_spaces: true
