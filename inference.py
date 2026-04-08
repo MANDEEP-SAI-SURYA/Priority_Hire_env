@@ -6,8 +6,8 @@ from typing import List, Optional
 
 from openai import OpenAI
 
-from priority_hire_env.baselines import priority_fit_policy
-from priority_hire_env.env import PriorityHireEnv
+from client import PriorityHireEnv
+from server.environment import priority_fit_policy
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")

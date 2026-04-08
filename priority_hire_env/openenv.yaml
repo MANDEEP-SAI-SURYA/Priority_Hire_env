@@ -1,35 +1,37 @@
 spec_version: 1
 name: priority_hire_env
+version: "0.1.0"
 description: Dynamic interview scheduling environment for priority-aware hiring batches.
 type: environment
 runtime: fastapi
-app: priority_hire_env.server:app
+app: server.app:app
+action: PriorityHireAction
+observation: PriorityHireObservation
 entrypoint:
-  module: priority_hire_env.env
-  class: PriorityHireEnv
+  module: server.environment
+  class: PriorityHireEnvironment
 server:
-  module: priority_hire_env.server
+  module: server.app
   app: app
 models:
-  observation: priority_hire_env.models.Observation
-  action: priority_hire_env.models.ActionModel
-  reward: priority_hire_env.models.RewardModel
+  observation: models.PriorityHireObservation
+  action: models.PriorityHireAction
 tasks:
   - id: easy_critical_backend
     name: easy_critical_backend
-    grader: priority_hire_env.graders.grade_easy_critical_backend
+    grader: server.environment.grade_easy_critical_backend
   - id: medium_scarce_ml_specialist
     name: medium_scarce_ml_specialist
-    grader: priority_hire_env.graders.grade_medium_scarce_ml_specialist
+    grader: server.environment.grade_medium_scarce_ml_specialist
   - id: hard_multi_tradeoff
     name: hard_multi_tradeoff
-    grader: priority_hire_env.graders.grade_hard_multi_tradeoff
+    grader: server.environment.grade_hard_multi_tradeoff
   - id: medium_deadline_pressure
     name: medium_deadline_pressure
-    grader: priority_hire_env.graders.grade_medium_deadline_pressure
+    grader: server.environment.grade_medium_deadline_pressure
   - id: hard_conflicting_priorities
     name: hard_conflicting_priorities
-    grader: priority_hire_env.graders.grade_hard_conflicting_priorities
+    grader: server.environment.grade_hard_conflicting_priorities
 baselines:
   - fifo
   - priority_only
