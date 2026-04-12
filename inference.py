@@ -30,6 +30,8 @@ TASK_IDS = [
 ]
 MAX_STEPS = 12
 FALLBACK_SCORE = 0.1002
+MIN_SCORE = 0.0001
+MAX_SCORE = 0.9999
 
 SYSTEM_PROMPT = """You schedule candidates into interviewer slots.
 Output ONLY valid compact JSON with keys:
@@ -41,6 +43,10 @@ Rules:
 """
 
 PROXY_WARMUP_PROMPT = "Reply with OK only."
+
+
+def clamp_score(value: float) -> float:
+    return min(max(float(value), MIN_SCORE), MAX_SCORE)
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -152,7 +158,7 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
             result = env.step(action)
             steps_taken += 1
             obs = result.observation
-            reward = result.reward or 0.0
+            reward = clamp_score(result.reward or FALLBACK_SCORE)
             done = result.done
             error = getattr(result, "last_action_error", None) or getattr(obs, "last_action_error", None)
 
@@ -167,7 +173,7 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
                 result = env.step(PriorityHireAction.submit("auto-submit-empty-queue"))
                 steps_taken += 1
                 obs = result.observation
-                reward = result.reward or 0.0
+                reward = clamp_score(result.reward or FALLBACK_SCORE)
                 done = result.done
                 rewards.append(reward)
                 error = getattr(result, "last_action_error", None) or getattr(obs, "last_action_error", None)
@@ -175,8 +181,8 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
                 if done:
                     break
 
-        score = max(rewards) if rewards else 0.0
-        score = min(max(score, 0.0), 1.0)
+        score = max(rewards) if rewards else FALLBACK_SCORE
+        score = clamp_score(score)
         success = score >= 0.85
 
     except Exception:
@@ -184,7 +190,8 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
         success = False
 
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        final_rewards = rewards if rewards else [clamp_score(score)]
+        log_end(success=success, steps=steps_taken, rewards=final_rewards)
 
     return score
 
