@@ -15,12 +15,12 @@ from client import PriorityHireEnv
 from models import PriorityHireAction
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME = os.getenv("PRIORITY_HIRE_TASK", "easy_critical_backend")
 BENCHMARK = os.getenv("PRIORITY_HIRE_BENCHMARK", "priority_hire")
 SPACE_URL = os.getenv("SPACE_URL", "https://priorityhire-env.hf.space")
+HF_TOKEN = os.environ["HF_TOKEN"]
 TASK_IDS = [
     "easy_critical_backend",
     "medium_scarce_ml_specialist",
@@ -52,17 +52,14 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     done_val = str(done).lower()
     action_clean = action.replace("\n", " ")[:120]
     print(
-        f"[STEP] step={step} action={action_clean!r} reward={reward:.4f} done={done_val} error={error_val}",
+        f"[STEP] step={step} action={action_clean!r} reward={reward:.2f} done={done_val} error={error_val}",
         flush=True,
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.4f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}",
-        flush=True,
-    )
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
 
 
 def build_prompt(obs) -> str:
@@ -98,16 +95,8 @@ def parse_action(raw: str) -> Dict[str, str]:
 
 
 def build_client() -> OpenAI:
-    submission_api_key = os.getenv("API_KEY")
-
-    if os.getenv("API_BASE_URL") and submission_api_key:
-        print("[DEBUG] Using injected submission proxy credentials.", flush=True)
-        return OpenAI(base_url=API_BASE_URL, api_key=submission_api_key)
-
-    fallback_api_base_url = os.getenv("HF_INFERENCE_API_BASE_URL") or API_BASE_URL
-    fallback_api_key = os.getenv("HF_TOKEN") or os.getenv("LOCAL_API_KEY")
-    print("[DEBUG] Submission proxy vars missing; using local fallback client settings.", flush=True)
-    return OpenAI(base_url=fallback_api_base_url, api_key=fallback_api_key)
+    api_key = os.getenv("API_KEY") or HF_TOKEN
+    return OpenAI(base_url=API_BASE_URL, api_key=api_key)
 
 
 def warmup_llm_call(client: OpenAI, model_name: str) -> None:
@@ -119,8 +108,7 @@ def warmup_llm_call(client: OpenAI, model_name: str) -> None:
         max_tokens=8,
         stream=False,
     )
-    warmup_text = (response.choices[0].message.content or "").strip()
-    print(f"[DEBUG] Warmup response={warmup_text!r}", flush=True)
+    _ = (response.choices[0].message.content or "").strip()
 
 
 def run_task(env, client, model_name: str, task_id: str) -> float:
@@ -162,27 +150,28 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
             )
 
             result = env.step(action)
+            steps_taken += 1
             obs = result.observation
             reward = result.reward or 0.0
             done = result.done
-            error = None
+            error = getattr(result, "last_action_error", None) or getattr(obs, "last_action_error", None)
 
             rewards.append(reward)
-            steps_taken = step
 
-            log_step(step=step, action=json.dumps(action_obj), reward=reward, done=done, error=error)
+            log_step(step=steps_taken, action=json.dumps(action_obj), reward=reward, done=done, error=error)
 
             if done:
                 break
 
             if not obs.pending_candidates_queue and not done:
                 result = env.step(PriorityHireAction.submit("auto-submit-empty-queue"))
+                steps_taken += 1
                 obs = result.observation
                 reward = result.reward or 0.0
                 done = result.done
                 rewards.append(reward)
-                steps_taken = step
-                log_step(step=step, action='{"action_type":"submit"}', reward=reward, done=done, error=None)
+                error = getattr(result, "last_action_error", None) or getattr(obs, "last_action_error", None)
+                log_step(step=steps_taken, action='{"action_type":"submit"}', reward=reward, done=done, error=error)
                 if done:
                     break
 
@@ -190,27 +179,17 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
         score = min(max(score, 0.0), 1.0)
         success = score >= 0.85
 
-    except Exception as e:
-        print(f"[DEBUG] Task error: {e}", flush=True)
+    except Exception:
         score = FALLBACK_SCORE
         success = False
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        log_end(success=success, steps=steps_taken, rewards=rewards)
 
     return score
 
 
 def main():
-    api_key_present = bool(os.getenv("API_KEY"))
-
-    print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
-    print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
-    print(f"[DEBUG] SPACE_URL={SPACE_URL}", flush=True)
-    print(f"[DEBUG] IMAGE_NAME={IMAGE_NAME}", flush=True)
-    print(f"[DEBUG] TASK_NAME={TASK_NAME}", flush=True)
-    print(f"[DEBUG] API_KEY present={api_key_present}", flush=True)
-
     client = build_client()
     warmup_llm_call(client, MODEL_NAME)
 
@@ -224,23 +203,18 @@ def main():
             for task_id in task_ids:
                 try:
                     score = run_task(env, client, MODEL_NAME, task_id)
-                except Exception as e:
-                    print(f"[DEBUG] Task {task_id} error: {e}", flush=True)
+                except Exception:
                     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
-                    log_end(success=False, steps=0, score=FALLBACK_SCORE, rewards=[FALLBACK_SCORE])
+                    log_end(success=False, steps=0, rewards=[FALLBACK_SCORE])
                     score = FALLBACK_SCORE
                 all_scores[task_id] = score
 
-    except Exception as e:
-        print(f"[DEBUG] Connection error: {e}", flush=True)
+    except Exception:
         for task_id in task_ids:
             if task_id not in all_scores:
                 log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
-                log_end(success=False, steps=0, score=FALLBACK_SCORE, rewards=[FALLBACK_SCORE])
+                log_end(success=False, steps=0, rewards=[FALLBACK_SCORE])
                 all_scores[task_id] = FALLBACK_SCORE
-
-    avg = sum(all_scores.values()) / len(all_scores) if all_scores else 0.0
-    print(f"[SUMMARY] scores={all_scores} average={avg:.4f}", flush=True)
 
 
 if __name__ == "__main__":

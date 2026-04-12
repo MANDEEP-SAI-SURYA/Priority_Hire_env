@@ -366,7 +366,6 @@ The Docker image:
 - exposes port `7860`
 - includes a health check against `/health`
 
-This makes it suitable for Hugging Face Docker Spaces.
 
 ## OpenEnv Metadata
 
@@ -381,15 +380,3 @@ This makes it suitable for Hugging Face Docker Spaces.
 - endpoint descriptions
 - runtime metadata such as Python version and Docker/HF Spaces support
 
-## Notes and Gotchas
-
-- Use `pip install -r requirements.txt`, not `pip install requirements.txt`
-- for benchmark submissions, use the injected `API_BASE_URL` and `API_KEY` exactly as provided
-- `submit` is required for final grading, but the grader auto-submits if needed
-- the environment may auto-submit when `max_attempts` is reached
-- task scores are intentionally bounded below `1.0`
-- `inference.py` now runs the full task list by default; set `PRIORITY_HIRE_RUN_SINGLE_TASK=true` to force single-task mode
-
-## Summary
-
-Priority Hire Env is a compact but expressive benchmark for testing agentic planning in a constrained scheduling problem. If you want to modify task difficulty, add new scenarios, or change grading behavior, `server/environment.py` is the main place to work.
