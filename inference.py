@@ -30,8 +30,8 @@ TASK_IDS = [
 ]
 MAX_STEPS = 12
 FALLBACK_SCORE = 0.1002
-MIN_SCORE = 0.0001
-MAX_SCORE = 0.9999
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
 
 SYSTEM_PROMPT = """You schedule candidates into interviewer slots.
 Output ONLY valid compact JSON with keys:
