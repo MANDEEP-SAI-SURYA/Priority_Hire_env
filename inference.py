@@ -63,9 +63,12 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 def build_prompt(obs) -> str:
@@ -191,7 +194,7 @@ def run_task(env, client, model_name: str, task_id: str) -> float:
 
     finally:
         final_rewards = rewards if rewards else [clamp_score(score)]
-        log_end(success=success, steps=steps_taken, rewards=final_rewards)
+        log_end(success=success, steps=steps_taken, score=clamp_score(score), rewards=final_rewards)
 
     return score
 
@@ -212,7 +215,7 @@ def main():
                     score = run_task(env, client, MODEL_NAME, task_id)
                 except Exception:
                     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
-                    log_end(success=False, steps=0, rewards=[FALLBACK_SCORE])
+                    log_end(success=False, steps=0, score=FALLBACK_SCORE, rewards=[FALLBACK_SCORE])
                     score = FALLBACK_SCORE
                 all_scores[task_id] = score
 
@@ -220,7 +223,7 @@ def main():
         for task_id in task_ids:
             if task_id not in all_scores:
                 log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
-                log_end(success=False, steps=0, rewards=[FALLBACK_SCORE])
+                log_end(success=False, steps=0, score=FALLBACK_SCORE, rewards=[FALLBACK_SCORE])
                 all_scores[task_id] = FALLBACK_SCORE
 
 
